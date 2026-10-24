@@ -16,6 +16,11 @@
           "description": "Title of the examination",
           "maxLength": 200
         },
+        "examTitle": {
+          "type": "string",
+          "description": "Title of the examination",
+          "maxLength": 200
+        },
         "subject": {
           "type": "string",
           "description": "Subject name, e.g. Hóa học",
@@ -24,6 +29,11 @@
         "grade": {
           "type": "string",
           "description": "Grade or target class level, e.g. Khối 12, 12A1",
+          "maxLength": 50
+        },
+        "gradeClass": {
+          "type": "string",
+          "description": "Grade or target class assigned, e.g. Khối 12, 10A1, 11A2, 12A1",
           "maxLength": 50
         },
         "targetClass": {
@@ -36,6 +46,10 @@
           "description": "4-digit exam code, e.g. 1003",
           "minLength": 4,
           "maxLength": 10
+        },
+        "duration": {
+          "type": "number",
+          "description": "Duration in minutes"
         },
         "durationMinutes": {
           "type": "number",
@@ -64,7 +78,7 @@
           "description": "Creation timestamp in ISO format"
         }
       },
-      "required": ["roomCode", "title", "subject", "durationMinutes", "status", "createdAt"]
+      "required": ["roomCode", "status", "createdAt"]
     },
     "StudentSubmission": {
       "title": "StudentSubmission",
@@ -91,6 +105,10 @@
           "type": "string",
           "description": "Student ID or exam seat number (SBD)",
           "maxLength": 50
+        },
+        "score": {
+          "type": "object",
+          "description": "Structured score object containing total, part1, part2, part3"
         },
         "scoreTotal": {
           "type": "number",
@@ -119,6 +137,10 @@
         "answersPart3": {
           "type": "object",
           "description": "Student answers for Part 3"
+        },
+        "timeSpent": {
+          "type": "number",
+          "description": "Time spent in seconds"
         },
         "timeSpentSeconds": {
           "type": "number",
@@ -150,6 +172,18 @@
     }
   },
   "firestore": {
+    "/exam_rooms/{roomCode}": {
+      "schema": {
+        "$ref": "#/entities/ExamRoom"
+      },
+      "description": "Standardized online exam rooms indexed by 4-digit roomCode"
+    },
+    "/exam_submissions/{roomCode}/students/{submissionId}": {
+      "schema": {
+        "$ref": "#/entities/StudentSubmission"
+      },
+      "description": "Student submissions organized under exam_submissions/{roomCode}/students/{submissionId}"
+    },
     "/exams/{examId}": {
       "schema": {
         "$ref": "#/entities/ExamRoom"

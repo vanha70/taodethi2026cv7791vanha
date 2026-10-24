@@ -41,6 +41,7 @@ import {
   savePublicAppUrlSetting,
   loadPublicAppUrlSetting,
   buildStudentRoomLink,
+  formatStudentFullName,
   PUBLIC_APP_URL_STORAGE_KEY,
 } from '../services/roomService';
 import { copyTextToClipboard, safeLocalStorage } from '../utils/browserSafeguards';
@@ -48,6 +49,8 @@ import { copyTextToClipboard, safeLocalStorage } from '../utils/browserSafeguard
 interface OnlineRoomManagerProps {
   currentExam: ExamData;
   initialRoomCode?: string | null;
+  standaloneStudentMode?: boolean;
+  onExitStandaloneStudentMode?: () => void;
   onUpdateExamMetadata?: (examCode: string, grade: string, durationMinutes: number, examTitle: string) => void;
   onStudentStartTest: (
     room: ExamRoomDoc,
@@ -56,19 +59,25 @@ interface OnlineRoomManagerProps {
 }
 
 const PRESET_CLASSES = ['Khối 10', 'Khối 11', 'Khối 12', '10A1', '11A1', '11A2', '12A1', '12A2'];
+const STUDENT_QUICK_CLASSES = ['10A1', '10A2', '11A1', '11A2', '12A1', '12A2'];
 
 export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
   currentExam,
   initialRoomCode,
+  standaloneStudentMode = false,
+  onExitStandaloneStudentMode,
   onUpdateExamMetadata,
   onStudentStartTest,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'teacher' | 'student'>(
-    initialRoomCode ? 'student' : 'teacher'
+    standaloneStudentMode || initialRoomCode ? 'student' : 'teacher'
   );
 
   // Teacher states
   const [publishedExams, setPublishedExams] = useState<ExamRoomDoc[]>([]);
+  const [roomSubmissionStats, setRoomSubmissionStats] = useState<
+    Record<string, { count: number; avgScore: string }>
+  >({});
   const [activeRoom, setActiveRoom] = useState<ExamRoomDoc | null>(null);
   const [submissions, setSubmissions] = useState<StudentSubmissionDoc[]>([]);
   const [isCreating, setIsCreating] = useState<boolean>(false);
@@ -123,19 +132,24 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
   const [isSearchingRoom, setIsSearchingRoom] = useState<boolean>(false);
   const [joinError, setJoinError] = useState<string | null>(null);
 
-  // Sync when initialRoomCode prop changes (e.g. student opens URL /?room=1003)
+  // Sync when initialRoomCode or standaloneStudentMode prop changes (e.g. student opens URL /?room=1003)
   useEffect(() => {
-    if (initialRoomCode && initialRoomCode.trim()) {
-      const clean = initialRoomCode.trim();
+    if (standaloneStudentMode) {
       setActiveSubTab('student');
-      setJoinCode(clean);
     }
-  }, [initialRoomCode]);
+    if (initialRoomCode && initialRoomCode.trim()) {
+      const clean = initialRoomCode.replace(/\D/g, '').slice(0, 4);
+      setActiveSubTab('student');
+      if (clean) {
+        setJoinCode(clean);
+      }
+    }
+  }, [initialRoomCode, standaloneStudentMode]);
 
   // Auto-lookup room details when student types a 4-digit code or arrives via ?room=1003
   useEffect(() => {
     const clean = joinCode.trim();
-    if (clean.length < 4) {
+    if (!isValid4DigitCode(clean)) {
       setPreviewedStudentRoom(null);
       return;
     }
@@ -145,7 +159,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
         if (!cancelled) {
           setPreviewedStudentRoom(found);
           if (found && found.targetClass && !found.targetClass.startsWith('Khối')) {
-            setStudentClass(found.targetClass);
+            setStudentClass((prev) => prev || found.targetClass || '12A1');
           }
         }
       })
@@ -157,8 +171,9 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
     };
   }, [joinCode]);
 
-  // Subscribe to all published exams in Firebase `exams` collection
+  // Subscribe to all published exams in Firebase `exam_rooms` / `exams` collection
   useEffect(() => {
+    if (standaloneStudentMode) return;
     const unsubscribe = subscribeToPublishedExams(
       (examsList) => {
         setPublishedExams(examsList);
@@ -168,7 +183,31 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
       }
     );
     return () => unsubscribe();
-  }, []);
+  }, [standaloneStudentMode]);
+
+  // Subscribe to live submission statistics per roomCode across publishedExams
+  useEffect(() => {
+    if (standaloneStudentMode || publishedExams.length === 0) return;
+
+    const unsubscribers = publishedExams.map((room) => {
+      const code = room.roomCode || room.id;
+      return subscribeToSubmissions(code, (subsList) => {
+        const count = subsList.length;
+        const avgScore =
+          count > 0
+            ? (subsList.reduce((acc, s) => acc + s.scoreTotal, 0) / count).toFixed(2)
+            : '0.00';
+        setRoomSubmissionStats((prev) => ({
+          ...prev,
+          [code]: { count, avgScore },
+        }));
+      });
+    });
+
+    return () => {
+      unsubscribers.forEach((unsub) => unsub());
+    };
+  }, [publishedExams, standaloneStudentMode]);
 
   // Subscribe to real-time submissions when activeRoom is selected
   useEffect(() => {
@@ -339,7 +378,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
 
       setActiveRoom(newRoom);
       setPublishSuccessBanner(
-        `Đã xuất bản đề thi lên Firebase Firestore (exams/${newRoom.roomCode}) thành công! Mã phòng 4 số: ${newRoom.roomCode} • Lớp: ${cleanClass}`
+        `Đã xuất bản đề thi lên Firebase Firestore (exam_rooms/${newRoom.roomCode}) thành công! Mã phòng 4 số: ${newRoom.roomCode} • Lớp: ${cleanClass}`
       );
     } catch (err) {
       console.error(err);
@@ -377,19 +416,28 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
     }
   };
 
-  // Student searches and enters room
+  // Student searches and enters room (Mandatory 3-field verification: 4-digit roomCode + studentName + studentClass)
+  const isStudentRoomCodeValid = isValid4DigitCode(joinCode.trim());
+  const isStudentNameValid = studentName.trim().length > 0;
+  const isStudentClassValid = studentClass.trim().length > 0;
+  const isStudentLoginValid =
+    isStudentRoomCodeValid && isStudentNameValid && isStudentClassValid;
+
   const handleStudentJoin = async () => {
     const cleanCode = joinCode.trim();
-    if (!cleanCode) {
-      setJoinError('Vui lòng nhập Mã phòng thi (4 chữ số, ví dụ: 1003)!');
+    const formattedName = formatStudentFullName(studentName, false);
+    const cleanClass = studentClass.trim();
+
+    if (!isValid4DigitCode(cleanCode)) {
+      setJoinError('Vui lòng nhập đúng Mã phòng thi gồm 4 chữ số (ví dụ: 3203, 1003)!');
       return;
     }
-    if (!studentName.trim()) {
-      setJoinError('Vui lòng nhập Họ và tên học sinh!');
+    if (!formattedName) {
+      setJoinError('Vui lòng nhập đầy đủ Họ và tên học sinh!');
       return;
     }
-    if (!studentClass.trim()) {
-      setJoinError('Vui lòng nhập Lớp của bạn (ví dụ: 12A1)!');
+    if (!cleanClass) {
+      setJoinError('Vui lòng nhập hoặc chọn Lớp của bạn (ví dụ: 10A1, 11A2, 12A1)!');
       return;
     }
 
@@ -398,27 +446,26 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
       setJoinError(null);
 
       const room = await findRoomByCode(cleanCode);
-      if (!room) {
+      if (!room || room.status === 'closed') {
         setJoinError(
-          `Không tìm thấy đề thi / phòng thi với mã "${cleanCode}" trên Firebase. Vui lòng kiểm tra lại mã 4 số!`
+          'Mã phòng thi không tồn tại hoặc chưa mở. Vui lòng kiểm tra lại với giáo viên!'
         );
         return;
       }
 
-      if (room.status === 'closed') {
-        setJoinError('Phòng thi này hiện đã bị giáo viên khóa / kết thúc nhận bài!');
-        return;
-      }
+      setStudentName(formattedName);
 
       // Enter student exam (OnlineTestRoom automatically shuffles Part I, II, III and grades)
       onStudentStartTest(room, {
-        name: studentName.trim(),
-        className: studentClass.trim(),
+        name: formattedName,
+        className: cleanClass,
         sbd: studentSbd.trim() || `HS-${Math.floor(100 + Math.random() * 900)}`,
       });
     } catch (err: any) {
       console.error(err);
-      setJoinError(err.message || 'Lỗi khi kết nối phòng thi Firebase');
+      setJoinError(
+        'Mã phòng thi không tồn tại hoặc chưa mở. Vui lòng kiểm tra lại với giáo viên!'
+      );
     } finally {
       setIsSearchingRoom(false);
     }
@@ -472,46 +519,51 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Top role switch tab */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setActiveSubTab('teacher')}
-            className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-colors cursor-pointer flex items-center gap-2 ${
-              activeSubTab === 'teacher'
-                ? 'bg-indigo-600 text-white shadow-xs'
-                : 'text-slate-600 hover:bg-slate-100'
-            }`}
-          >
-            <Users className="w-4 h-4" />
-            <span>1. Giáo Viên: Xuất Bản Đề (Mã 4 Số) & Kho Đề Đã Xuất Bản</span>
-          </button>
+      {/* Top role switch tab (Hidden in Standalone Student Portal Mode) */}
+      {!standaloneStudentMode && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveSubTab('teacher')}
+              className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-colors cursor-pointer flex items-center gap-2 ${
+                activeSubTab === 'teacher'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              <Users className="w-4 h-4" />
+              <span>1. Giáo Viên: Xuất Bản Đề (Mã 4 Số) &amp; Kho Đề Đã Xuất Bản</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => setActiveSubTab('student')}
-            className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-colors cursor-pointer flex items-center gap-2 ${
-              activeSubTab === 'student'
-                ? 'bg-emerald-600 text-white shadow-xs'
-                : 'text-slate-600 hover:bg-slate-100'
-            }`}
-          >
-            <LogIn className="w-4 h-4" />
-            <span>2. Học Sinh: Nhập Mã Phòng 4 Số Vào Thi</span>
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => setActiveSubTab('student')}
+              className={`px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-colors cursor-pointer flex items-center gap-2 ${
+                activeSubTab === 'student'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              <LogIn className="w-4 h-4" />
+              <span>2. Học Sinh: Cổng Vào Phòng Thi Trực Tuyến (Mã 4 Số)</span>
+            </button>
+          </div>
 
-        <div className="text-xs text-slate-500 flex items-center gap-2 bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded-lg border border-emerald-200">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          <span>Đồng bộ trực tiếp Collection &quot;exams&quot; trên Firebase Firestore</span>
+          <div className="text-xs text-slate-500 flex items-center gap-2 bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded-lg border border-emerald-200">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span>
+              Đồng bộ trực tiếp <code className="font-mono font-bold">exam_rooms</code> &amp;{' '}
+              <code className="font-mono font-bold">exam_submissions</code> trên Firebase
+            </span>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* =====================================================================
           TEACHER DASHBOARD: CONFIG FORM + PUBLISHED ROOM CARD + REPOSITORY
           ===================================================================== */}
-      {activeSubTab === 'teacher' && (
+      {!standaloneStudentMode && activeSubTab === 'teacher' && (
         <div className="space-y-6">
           {publishSuccessBanner && (
             <div className="p-4 bg-emerald-50 border border-emerald-300 rounded-2xl text-xs sm:text-sm text-emerald-950 font-semibold flex items-center justify-between gap-3 shadow-2xs">
@@ -1148,7 +1200,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                     KHO ĐỀ KIỂM TRA ONLINE ĐÃ XUẤT BẢN ({publishedExams.length})
                   </h3>
                   <p className="text-xs text-slate-300">
-                    Danh sách các đề kiểm tra đã lưu trên Firebase Collection <code className="font-mono text-amber-300">exams</code> • Sẵn sàng copy LINK GỬI HS, Tin nhắn giao bài & Mã QR
+                    Quản lý tập trung trên Firebase <code className="font-mono text-amber-300">exam_rooms/&#123;roomCode&#125;</code> &amp; <code className="font-mono text-emerald-300">exam_submissions/&#123;roomCode&#125;/students</code> • Đóng/Mở phòng thi &amp; Thống kê bài nộp theo từng Mã phòng
                   </p>
                 </div>
               </div>
@@ -1173,6 +1225,10 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                     (room.examData?.part1?.length || 0) +
                     (room.examData?.part2?.length || 0) +
                     (room.examData?.part3?.length || 0);
+                  const roomStats = roomSubmissionStats[room.roomCode] || {
+                    count: 0,
+                    avgScore: '0.00',
+                  };
 
                   return (
                     <div
@@ -1183,7 +1239,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                           : 'border-slate-200 bg-white hover:border-indigo-300'
                       }`}
                     >
-                      {/* Top row: Big 4-digit Room Code + Class + Title */}
+                      {/* Top row: Big 4-digit Room Code + Class + Title + Live Submissions Badge */}
                       <div className="flex items-start justify-between gap-3">
                         <div className="space-y-1.5 min-w-0">
                           <div className="flex flex-wrap items-center gap-1.5">
@@ -1197,19 +1253,37 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                               {qCount} câu
                             </span>
                             <span
-                              className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                              className={`px-2 py-0.5 rounded-md text-[10px] font-bold flex items-center gap-1 ${
                                 room.status === 'open'
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : 'bg-rose-100 text-rose-800'
+                                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                  : 'bg-rose-100 text-rose-800 border border-rose-300'
                               }`}
                             >
-                              {room.status === 'open' ? 'Đang mở' : 'Đã khóa'}
+                              <span
+                                className={`w-1.5 h-1.5 rounded-full ${
+                                  room.status === 'open' ? 'bg-emerald-600 animate-pulse' : 'bg-rose-600'
+                                }`}
+                              />
+                              {room.status === 'open' ? 'Đang mở thi (open)' : 'Đã đóng phòng (closed)'}
                             </span>
                           </div>
 
                           <h4 className="text-sm sm:text-base font-bold text-slate-900 leading-snug">
                             {room.title}
                           </h4>
+
+                          {/* Live Submission Stats Bar per Room Code */}
+                          <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold bg-slate-100 text-slate-800 px-2.5 py-1 rounded-lg border border-slate-200">
+                            <span className="text-indigo-700 flex items-center gap-1">
+                              <Users className="w-3.5 h-3.5" />
+                              Đã nộp: {roomStats.count} HS
+                            </span>
+                            <span className="text-slate-300">•</span>
+                            <span className="text-sky-700">
+                              ĐTB: {roomStats.avgScore} / 10.0
+                            </span>
+                          </div>
+
                           <p className="text-[11px] text-emerald-800 font-mono truncate bg-emerald-50/80 px-2 py-0.5 rounded border border-emerald-200">
                             LINK GỬI HS: {getDirectRoomUrl(room.roomCode)}
                           </p>
@@ -1294,7 +1368,35 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                           </button>
                         </div>
 
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {/* Direct Open / Close Room Toggle on Card */}
+                          <button
+                            type="button"
+                            onClick={() => handleToggleRoomStatus(room)}
+                            className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors ${
+                              room.status === 'open'
+                                ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300'
+                                : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-300'
+                            }`}
+                            title={
+                              room.status === 'open'
+                                ? 'Đóng phòng thi (Học sinh sẽ không thể vào phòng)'
+                                : 'Mở lại phòng thi cho học sinh vào làm bài'
+                            }
+                          >
+                            {room.status === 'open' ? (
+                              <>
+                                <Lock className="w-3.5 h-3.5 text-amber-700" />
+                                <span>Đóng phòng</span>
+                              </>
+                            ) : (
+                              <>
+                                <Unlock className="w-3.5 h-3.5 text-emerald-700" />
+                                <span>Mở phòng</span>
+                              </>
+                            )}
+                          </button>
+
                           <button
                             type="button"
                             onClick={() => setActiveRoom(room)}
@@ -1304,7 +1406,9 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                                 : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200'
                             }`}
                           >
-                            {isSelected ? 'Đang xem điểm' : 'Xem Bảng Điểm'}
+                            {isSelected
+                              ? `Đang xem điểm (${roomStats.count})`
+                              : `Xem Bảng Điểm (${roomStats.count})`}
                           </button>
 
                           <button
@@ -1327,120 +1431,215 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
       )}
 
       {/* =====================================================================
-          STUDENT JOIN PORTAL (BY 4-DIGIT CODE OR DIRECT LINK ?room=1003)
+          STUDENT JOIN PORTAL: CỔNG VÀO PHÒNG THI TRỰC TUYẾN
+          (3 MANDATORY FIELDS: 4-DIGIT ROOM CODE + FULL NAME + CLASS)
           ===================================================================== */}
-      {activeSubTab === 'student' && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-10 max-w-lg mx-auto">
-          <div className="text-center mb-6">
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-600 text-white flex items-center justify-center mx-auto mb-3 shadow-md shadow-emerald-200">
-              <LogIn className="w-6 h-6" />
+      {(standaloneStudentMode || activeSubTab === 'student') && (
+        <div className="bg-white rounded-3xl border-2 border-indigo-100 shadow-xl overflow-hidden max-w-xl mx-auto">
+          {/* Top Formal Banner */}
+          <div className="bg-gradient-to-r from-indigo-950 via-indigo-900 to-teal-900 text-white p-6 sm:p-8 text-center relative">
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-emerald-400 to-teal-500 text-slate-950 flex items-center justify-center mx-auto mb-3 shadow-lg shadow-emerald-500/20">
+              <GraduationCap className="w-8 h-8" />
             </div>
-            <h3 className="text-xl font-bold text-slate-900">VÀO PHÒNG THI TRỰC TUYẾN</h3>
-            <p className="text-xs text-slate-500 mt-1">
-              Nhập Mã phòng thi (4 chữ số) do thầy cô cung cấp để tải đề thi và làm bài
+            <span className="inline-block px-3 py-0.5 rounded-full text-[11px] font-extrabold uppercase tracking-widest bg-white/10 text-emerald-300 border border-white/15 mb-2">
+              HỆ THỐNG KIỂM TRA ĐÁNH GIÁ TRỰC TUYẾN CHUẨN CV 7991
+            </span>
+            <h2 className="text-xl sm:text-2xl font-black tracking-tight uppercase">
+              CỔNG VÀO PHÒNG THI TRỰC TUYẾN
+            </h2>
+            <p className="text-xs text-indigo-200 mt-1.5 max-w-md mx-auto">
+              Học sinh vui lòng điền đầy đủ và chính xác <strong>Mã phòng thi (4 số)</strong>,{' '}
+              <strong>Họ và tên</strong> và <strong>Lớp</strong> trước khi bắt đầu tính giờ làm bài.
             </p>
           </div>
 
-          {joinError && (
-            <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{joinError}</span>
-            </div>
-          )}
-
-          <div className="space-y-4 text-xs sm:text-sm">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                MÃ PHÒNG THI / MÃ ĐỀ (4 CHỮ SỐ) <span className="text-rose-600">*</span>:
-              </label>
-              <input
-                type="text"
-                inputMode="numeric"
-                maxLength={10}
-                value={joinCode}
-                onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-                placeholder="VÍ DỤ: 1003"
-                className="w-full text-center font-mono font-black text-2xl tracking-widest uppercase border-2 border-emerald-400 rounded-xl p-3 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-200 bg-emerald-50/30 text-emerald-950"
-              />
-            </div>
-
-            {/* Live matched exam preview box when student enters valid 4-digit room code */}
-            {previewedStudentRoom && (
-              <div className="p-3.5 rounded-xl bg-indigo-50 border border-indigo-200 space-y-1">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-bold text-indigo-950">{previewedStudentRoom.title}</span>
-                  <span className="px-2 py-0.5 rounded bg-indigo-600 text-white font-bold text-[11px]">
-                    Mã: {previewedStudentRoom.roomCode}
-                  </span>
-                </div>
-                <div className="text-[11px] text-indigo-800 flex flex-wrap items-center gap-2">
-                  <span>
-                    Lớp: <strong>{previewedStudentRoom.targetClass || previewedStudentRoom.grade}</strong>
-                  </span>
-                  <span>•</span>
-                  <span>
-                    Thời gian: <strong>{previewedStudentRoom.durationMinutes} phút</strong>
-                  </span>
-                  <span>•</span>
-                  <span>Hệ thống tự động trộn câu hỏi &amp; đáp án</span>
-                </div>
+          <div className="p-6 sm:p-8 space-y-5">
+            {joinError && (
+              <div className="p-4 bg-rose-50 border-2 border-rose-300 rounded-2xl text-xs sm:text-sm text-rose-800 font-bold flex items-start gap-2.5 shadow-2xs">
+                <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                <span>{joinError}</span>
               </div>
             )}
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Họ và tên học sinh <span className="text-rose-600">*</span>:
-              </label>
-              <input
-                type="text"
-                value={studentName}
-                onChange={(e) => setStudentName(e.target.value)}
-                placeholder="Nguyễn Văn A"
-                className="w-full text-base sm:text-sm border border-slate-300 rounded-xl p-3 sm:p-2.5 font-medium"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Lớp <span className="text-rose-600">*</span>:
-                </label>
+            <div className="space-y-4 text-xs sm:text-sm">
+              {/* Field 1: 4-Digit Room Code */}
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-extrabold text-slate-800 uppercase">
+                    1. Mã phòng thi (4 chữ số) <span className="text-rose-600">*</span>
+                  </label>
+                  {isStudentRoomCodeValid ? (
+                    <span className="text-[11px] font-bold text-emerald-700 flex items-center gap-1">
+                      <Check className="w-3.5 h-3.5" /> Đúng định dạng 4 số
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-semibold text-amber-700">
+                      Bắt buộc đủ 4 chữ số
+                    </span>
+                  )}
+                </div>
                 <input
                   type="text"
-                  value={studentClass}
-                  onChange={(e) => setStudentClass(e.target.value)}
-                  placeholder="12A1"
-                  className="w-full text-base sm:text-sm border border-slate-300 rounded-xl p-3 sm:p-2.5 font-medium"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={joinCode}
+                  onChange={(e) => {
+                    const digitsOnly = e.target.value.replace(/\D/g, '').slice(0, 4);
+                    setJoinCode(digitsOnly);
+                    setJoinError(null);
+                  }}
+                  placeholder="VD: 3203"
+                  className={`w-full text-center font-mono font-black text-3xl tracking-[0.3em] uppercase border-2 rounded-xl p-3 focus:outline-none transition-colors ${
+                    isStudentRoomCodeValid
+                      ? 'border-emerald-500 bg-emerald-50/40 text-emerald-950 focus:ring-2 focus:ring-emerald-200'
+                      : 'border-slate-300 bg-white text-slate-900 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-200'
+                  }`}
                 />
               </div>
 
+              {/* Live Room Status Preview when 4 digits entered */}
+              {isStudentRoomCodeValid && previewedStudentRoom && previewedStudentRoom.status === 'open' && (
+                <div className="p-4 rounded-2xl bg-indigo-50/90 border-2 border-indigo-200 space-y-1.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="font-black text-indigo-950 text-sm">
+                      {previewedStudentRoom.title}
+                    </span>
+                    <span className="px-2.5 py-0.5 rounded-full bg-emerald-600 text-white font-bold text-[11px] flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                      Phòng đang mở
+                    </span>
+                  </div>
+                  <div className="text-xs text-indigo-800 flex flex-wrap items-center gap-2 font-medium">
+                    <span>
+                      Khối/Lớp: <strong>{previewedStudentRoom.targetClass || previewedStudentRoom.grade}</strong>
+                    </span>
+                    <span>•</span>
+                    <span>
+                      Thời gian làm bài: <strong>{previewedStudentRoom.durationMinutes} phút</strong>
+                    </span>
+                    <span>•</span>
+                    <span>Đề 3 phần (Tự động trộn câu hỏi &amp; đáp án)</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Field 2: Student Full Name (Auto-capitalize each word) */}
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Số báo danh (SBD):
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-extrabold text-slate-800 uppercase">
+                    2. Họ và tên học sinh <span className="text-rose-600">*</span>
+                  </label>
+                  <span className="text-[11px] text-slate-500">
+                    Tự động viết hoa chữ cái đầu mỗi từ
+                  </span>
+                </div>
                 <input
                   type="text"
-                  value={studentSbd}
-                  onChange={(e) => setStudentSbd(e.target.value)}
-                  placeholder="012"
-                  className="w-full text-base sm:text-sm border border-slate-300 rounded-xl p-3 sm:p-2.5 font-medium"
+                  value={studentName}
+                  onChange={(e) => {
+                    setStudentName(formatStudentFullName(e.target.value, true));
+                    setJoinError(null);
+                  }}
+                  onBlur={() => {
+                    setStudentName((prev) => formatStudentFullName(prev, false));
+                  }}
+                  placeholder="Ví dụ: Nguyễn Văn An"
+                  className="w-full text-base sm:text-sm border-2 border-slate-300 rounded-xl p-3 font-bold text-slate-900 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-200 focus:outline-none"
                 />
               </div>
-            </div>
 
-            <button
-              type="button"
-              onClick={handleStudentJoin}
-              disabled={isSearchingRoom}
-              className="w-full min-h-[48px] py-3.5 rounded-xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-md shadow-emerald-200 cursor-pointer transition-all flex items-center justify-center gap-2 mt-4 disabled:opacity-60"
-            >
-              <span>
-                {isSearchingRoom
-                  ? 'Đang tải đề thi từ Firebase...'
-                  : `Vào Phòng Thi ${joinCode ? `(${joinCode})` : ''}`}
-              </span>
-              <ChevronRight className="w-4 h-4" />
-            </button>
+              {/* Field 3: Student Class + Optional SBD */}
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+                <div className="sm:col-span-8">
+                  <label className="block text-xs font-extrabold text-slate-800 uppercase mb-1">
+                    3. Lớp <span className="text-rose-600">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={studentClass}
+                    onChange={(e) => {
+                      setStudentClass(e.target.value.toUpperCase());
+                      setJoinError(null);
+                    }}
+                    placeholder="Ví dụ: 10A1, 11A2, 12A1"
+                    className="w-full text-base sm:text-sm border-2 border-slate-300 rounded-xl p-3 font-bold text-slate-900 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-200 focus:outline-none"
+                  />
+                  <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                    <span className="text-[11px] text-slate-500 font-semibold">Chọn nhanh:</span>
+                    {STUDENT_QUICK_CLASSES.map((cls) => (
+                      <button
+                        key={cls}
+                        type="button"
+                        onClick={() => {
+                          setStudentClass(cls);
+                          setJoinError(null);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                          studentClass.trim().toUpperCase() === cls
+                            ? 'bg-indigo-600 text-white border-indigo-600'
+                            : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-indigo-50'
+                        }`}
+                      >
+                        {cls}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="sm:col-span-4">
+                  <label className="block text-xs font-bold text-slate-600 uppercase mb-1">
+                    SBD (Tùy chọn)
+                  </label>
+                  <input
+                    type="text"
+                    value={studentSbd}
+                    onChange={(e) => setStudentSbd(e.target.value)}
+                    placeholder="VD: 015"
+                    className="w-full text-base sm:text-sm border-2 border-slate-200 rounded-xl p-3 font-semibold text-slate-800 focus:border-indigo-600 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Validation Checklist Banner */}
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex flex-wrap items-center justify-between gap-2 text-[11px] font-semibold text-slate-600">
+                <span className={isStudentRoomCodeValid ? 'text-emerald-700 font-bold' : 'text-slate-500'}>
+                  {isStudentRoomCodeValid ? '✓' : '○'} Mã phòng 4 số
+                </span>
+                <span className={isStudentNameValid ? 'text-emerald-700 font-bold' : 'text-slate-500'}>
+                  {isStudentNameValid ? '✓' : '○'} Họ và tên học sinh
+                </span>
+                <span className={isStudentClassValid ? 'text-emerald-700 font-bold' : 'text-slate-500'}>
+                  {isStudentClassValid ? '✓' : '○'} Lớp học
+                </span>
+              </div>
+
+              {/* Submit Button: Disabled until all 3 mandatory fields are valid */}
+              <button
+                type="button"
+                onClick={handleStudentJoin}
+                disabled={isSearchingRoom || !isStudentLoginValid}
+                className="w-full min-h-[52px] py-3.5 rounded-2xl font-black text-sm sm:text-base bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 hover:from-emerald-700 hover:to-indigo-700 text-white shadow-lg shadow-emerald-200 cursor-pointer transition-all flex items-center justify-center gap-2 mt-2 disabled:opacity-45 disabled:cursor-not-allowed"
+              >
+                <span>
+                  {isSearchingRoom
+                    ? 'Đang xác thực Mã phòng thi trên Firebase...'
+                    : `Vào phòng thi ${isStudentRoomCodeValid ? `(${joinCode.trim()})` : ''}`}
+                </span>
+                <ChevronRight className="w-5 h-5" />
+              </button>
+
+              {standaloneStudentMode && onExitStandaloneStudentMode && (
+                <div className="pt-3 border-t border-slate-100 text-center">
+                  <button
+                    type="button"
+                    onClick={onExitStandaloneStudentMode}
+                    className="text-[11px] font-semibold text-slate-400 hover:text-indigo-600 underline cursor-pointer"
+                  >
+                    Dành cho Giáo viên: Chuyển về Giao diện Quản lý &amp; Soạn đề
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

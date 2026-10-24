@@ -11,23 +11,36 @@ import {
   deleteDoc,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase/firebase';
-import { ExamData } from '../types/exam';
+import { ExamData, Part1Question, Part2Question, Part3Question } from '../types/exam';
 import { safeLocalStorage } from '../utils/browserSafeguards';
 
 export interface ExamRoomDoc {
   id: string;
   roomCode: string;
   examCode?: string;
+  examTitle?: string;
   title: string;
   subject: string;
   grade: string;
+  gradeClass?: string;
   targetClass?: string;
+  duration?: number;
   durationMinutes: number;
   status: 'open' | 'closed';
   teacherName: string;
   allowReview: boolean;
   createdAt: string;
+  part1?: Part1Question[];
+  part2?: Part2Question[];
+  part3?: Part3Question[];
   examData: ExamData;
+}
+
+export interface StudentSubmissionScore {
+  total: number;
+  part1: number;
+  part2: number;
+  part3: number;
 }
 
 export interface StudentSubmissionDoc {
@@ -37,6 +50,7 @@ export interface StudentSubmissionDoc {
   studentName: string;
   studentClass: string;
   studentId: string; // SBD
+  score?: StudentSubmissionScore;
   scoreTotal: number;
   scorePart1: number;
   scorePart2: number;
@@ -44,6 +58,7 @@ export interface StudentSubmissionDoc {
   answersPart1: Record<number, 'A' | 'B' | 'C' | 'D'>;
   answersPart2: Record<number, Record<'a' | 'b' | 'c' | 'd', boolean | null>>;
   answersPart3: Record<number, string>;
+  timeSpent?: number;
   timeSpentSeconds: number;
   submittedAt: string;
 }
@@ -51,6 +66,22 @@ export interface StudentSubmissionDoc {
 // Validate strict 4-digit exam/room code format (^\d{4}$)
 export function isValid4DigitCode(code: string): boolean {
   return /^\d{4}$/.test(code.trim());
+}
+
+/**
+ * Automatically capitalizes the first letter of each word in a Vietnamese student name.
+ * Preserves trailing space while typing if `preserveTrailingSpace` is true.
+ */
+export function formatStudentFullName(rawName: string, preserveTrailingSpace: boolean = false): string {
+  if (!rawName) return '';
+  const hasTrailingSpace = preserveTrailingSpace && /\s$/.test(rawName);
+  const words = rawName
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toLocaleUpperCase('vi-VN') + word.slice(1).toLocaleLowerCase('vi-VN'));
+  const formatted = words.join(' ');
+  return hasTrailingSpace && formatted ? `${formatted} ` : formatted;
 }
 
 // Generate unique 4-digit numeric code (e.g. 1003, 1001, 2026) not in existingCodes
@@ -85,7 +116,72 @@ function sanitizeForFirestore<T>(value: T): T {
   return value;
 }
 
-// 1. Publish / Create a new exam room in Firebase collection `exams` with Document ID = 4-digit Room Code
+/**
+ * Normalize an ExamRoomDoc loaded from `exam_rooms`, `exams`, or `rooms`
+ */
+function normalizeRoomDoc(raw: any, docId: string): ExamRoomDoc {
+  const roomCode = String(raw.roomCode || docId || '').trim();
+  const resolvedTitle = raw.examTitle || raw.title || raw.examData?.metadata?.examTitle || 'Đề kiểm tra trực tuyến';
+  const resolvedClass = raw.gradeClass || raw.targetClass || raw.grade || raw.examData?.metadata?.grade || 'Khối 12';
+  const resolvedDuration = Number(raw.duration || raw.durationMinutes || raw.examData?.metadata?.durationMinutes || 45);
+  return {
+    ...raw,
+    id: roomCode || docId,
+    roomCode,
+    examCode: raw.examCode || roomCode,
+    examTitle: resolvedTitle,
+    title: resolvedTitle,
+    subject: raw.subject || raw.examData?.metadata?.subject || 'Hóa học',
+    grade: resolvedClass,
+    gradeClass: resolvedClass,
+    targetClass: resolvedClass,
+    duration: resolvedDuration,
+    durationMinutes: resolvedDuration,
+    status: raw.status === 'closed' ? 'closed' : 'open',
+    teacherName: raw.teacherName || 'Giáo viên',
+    allowReview: raw.allowReview !== undefined ? Boolean(raw.allowReview) : true,
+    createdAt: raw.createdAt || new Date().toISOString(),
+  };
+}
+
+/**
+ * Normalize a StudentSubmissionDoc loaded from `exam_submissions/{roomCode}/students/{subId}`
+ * or legacy `exams/{roomCode}/submissions/{subId}`
+ */
+function normalizeSubmissionDoc(raw: any, docId: string): StudentSubmissionDoc {
+  const scoreTotal = Number(raw.score?.total ?? raw.scoreTotal ?? 0);
+  const scorePart1 = Number(raw.score?.part1 ?? raw.scorePart1 ?? 0);
+  const scorePart2 = Number(raw.score?.part2 ?? raw.scorePart2 ?? 0);
+  const scorePart3 = Number(raw.score?.part3 ?? raw.scorePart3 ?? 0);
+  const timeSpentSeconds = Number(raw.timeSpent ?? raw.timeSpentSeconds ?? 0);
+  return {
+    ...raw,
+    id: raw.id || docId,
+    roomId: raw.roomId || raw.roomCode || '',
+    roomCode: String(raw.roomCode || '').trim(),
+    studentName: raw.studentName || 'Học sinh',
+    studentClass: raw.studentClass || '',
+    studentId: raw.studentId || '',
+    score: {
+      total: scoreTotal,
+      part1: scorePart1,
+      part2: scorePart2,
+      part3: scorePart3,
+    },
+    scoreTotal,
+    scorePart1,
+    scorePart2,
+    scorePart3,
+    answersPart1: raw.answersPart1 || {},
+    answersPart2: raw.answersPart2 || {},
+    answersPart3: raw.answersPart3 || {},
+    timeSpent: timeSpentSeconds,
+    timeSpentSeconds,
+    submittedAt: raw.submittedAt || new Date().toISOString(),
+  };
+}
+
+// 1. Publish / Create a new exam room in Firebase collection `exam_rooms/{roomCode}` (and mirror to `exams/{roomCode}`)
 export async function createExamRoom(
   exam: ExamData,
   durationMinutes: number,
@@ -101,10 +197,12 @@ export async function createExamRoom(
       ? exam.metadata.examCode.trim()
       : generateRandom4DigitCode();
 
-  // Primary key (Document ID) in `exams` collection is the 4-digit roomCode itself
+  // Primary key (Document ID) in `exam_rooms` collection is the 4-digit roomCode itself
   const roomId = roomCode;
-  const path = `exams/${roomId}`;
+  const path = `exam_rooms/${roomId}`;
   const resolvedClass = targetClass?.trim() || exam.metadata.grade || 'Khối 12';
+  const resolvedDuration = Number(durationMinutes) || exam.metadata.durationMinutes || 45;
+  const resolvedTitle = exam.metadata.examTitle || 'Đề kiểm tra trực tuyến';
 
   const updatedExam: ExamData = {
     ...exam,
@@ -112,7 +210,7 @@ export async function createExamRoom(
       ...exam.metadata,
       examCode: roomCode,
       grade: resolvedClass,
-      durationMinutes: Number(durationMinutes) || exam.metadata.durationMinutes || 45,
+      durationMinutes: resolvedDuration,
     },
   };
 
@@ -120,62 +218,69 @@ export async function createExamRoom(
     id: roomId,
     roomCode,
     examCode: roomCode,
-    title: exam.metadata.examTitle || 'Đề kiểm tra trực tuyến',
+    examTitle: resolvedTitle,
+    title: resolvedTitle,
     subject: exam.metadata.subject || 'Hóa học',
     grade: resolvedClass,
+    gradeClass: resolvedClass,
     targetClass: resolvedClass,
-    durationMinutes: Number(durationMinutes) || exam.metadata.durationMinutes || 45,
+    duration: resolvedDuration,
+    durationMinutes: resolvedDuration,
     status: 'open',
     teacherName: teacherName || 'Giáo viên',
     allowReview: Boolean(allowReview),
     createdAt: new Date().toISOString(),
+    part1: updatedExam.part1,
+    part2: updatedExam.part2,
+    part3: updatedExam.part3,
     examData: updatedExam,
   });
 
   try {
-    // Save to `exams/{roomCode}` with Document ID = 4-digit roomCode
-    await setDoc(doc(db, 'exams', roomId), roomData);
-    // Also mirror to `rooms/{roomCode}` for backward compatibility
-    await setDoc(doc(db, 'rooms', roomId), roomData);
+    // Primary standardized path: `exam_rooms/{roomCode}`
+    await setDoc(doc(db, 'exam_rooms', roomId), roomData);
+    // Also mirror to `exams/{roomCode}` and `rooms/{roomCode}` for backward compatibility
+    try {
+      await setDoc(doc(db, 'exams', roomId), roomData);
+      await setDoc(doc(db, 'rooms', roomId), roomData);
+    } catch {
+      // ignore secondary mirror errors
+    }
     return roomData;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 
-// 2. Find published exam / room by 4-digit roomCode (checks `exams/{code}` first, then `rooms`)
+// 2. Find published exam / room by 4-digit roomCode (checks `exam_rooms/{roomCode}` first, then `exams` and `rooms`)
 export async function findRoomByCode(roomCode: string): Promise<ExamRoomDoc | null> {
   const cleanCode = roomCode.trim().toUpperCase();
-  const path = `exams/${cleanCode}`;
+  const path = `exam_rooms/${cleanCode}`;
 
   try {
-    // 1) Direct lookup by Document ID in `exams/{cleanCode}`
+    // 1) Primary lookup by Document ID in `exam_rooms/{cleanCode}`
+    const directExamRoomSnap = await getDoc(doc(db, 'exam_rooms', cleanCode));
+    if (directExamRoomSnap.exists()) {
+      return normalizeRoomDoc(directExamRoomSnap.data(), directExamRoomSnap.id);
+    }
+
+    // 2) Query `exam_rooms` collection where roomCode == cleanCode
+    const qExamRooms = query(collection(db, 'exam_rooms'), where('roomCode', '==', cleanCode));
+    const snapExamRooms = await getDocs(qExamRooms);
+    if (!snapExamRooms.empty) {
+      return normalizeRoomDoc(snapExamRooms.docs[0].data(), snapExamRooms.docs[0].id);
+    }
+
+    // 3) Fallback: Direct lookup in `exams/{cleanCode}`
     const directExamSnap = await getDoc(doc(db, 'exams', cleanCode));
     if (directExamSnap.exists()) {
-      const data = directExamSnap.data() as ExamRoomDoc;
-      return { ...data, id: directExamSnap.id };
+      return normalizeRoomDoc(directExamSnap.data(), directExamSnap.id);
     }
 
-    // 2) Query `exams` collection where roomCode == cleanCode
-    const qExams = query(collection(db, 'exams'), where('roomCode', '==', cleanCode));
-    const snapExams = await getDocs(qExams);
-    if (!snapExams.empty) {
-      const docData = snapExams.docs[0].data() as ExamRoomDoc;
-      return { ...docData, id: snapExams.docs[0].id };
-    }
-
-    // 3) Fallback: Direct lookup or query in `rooms` collection
+    // 4) Fallback: Direct lookup in `rooms/{cleanCode}`
     const directRoomSnap = await getDoc(doc(db, 'rooms', cleanCode));
     if (directRoomSnap.exists()) {
-      const data = directRoomSnap.data() as ExamRoomDoc;
-      return { ...data, id: directRoomSnap.id };
-    }
-
-    const qRooms = query(collection(db, 'rooms'), where('roomCode', '==', cleanCode));
-    const snapRooms = await getDocs(qRooms);
-    if (!snapRooms.empty) {
-      const docData = snapRooms.docs[0].data() as ExamRoomDoc;
-      return { ...docData, id: snapRooms.docs[0].id };
+      return normalizeRoomDoc(directRoomSnap.data(), directRoomSnap.id);
     }
 
     return null;
@@ -184,26 +289,38 @@ export async function findRoomByCode(roomCode: string): Promise<ExamRoomDoc | nu
   }
 }
 
-// 3. Real-time subscription to all published exams in `exams` collection
+// 3. Real-time subscription to all published exam rooms in `exam_rooms` (merged with `exams` for backward compatibility)
 export function subscribeToPublishedExams(
   onUpdate: (exams: ExamRoomDoc[]) => void,
   onError?: (err: any) => void
 ): () => void {
-  const path = 'exams';
-  const examsCol = collection(db, 'exams');
+  const path = 'exam_rooms';
+  const examRoomsCol = collection(db, 'exam_rooms');
+  const legacyExamsCol = collection(db, 'exams');
 
-  const unsubscribe = onSnapshot(
-    examsCol,
+  let primaryMap = new Map<string, ExamRoomDoc>();
+  let legacyMap = new Map<string, ExamRoomDoc>();
+
+  const emitMerged = () => {
+    const merged = new Map<string, ExamRoomDoc>();
+    legacyMap.forEach((v, k) => merged.set(k, v));
+    primaryMap.forEach((v, k) => merged.set(k, v));
+    const list = Array.from(merged.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    onUpdate(list);
+  };
+
+  const unsubPrimary = onSnapshot(
+    examRoomsCol,
     (snapshot) => {
-      const list: ExamRoomDoc[] = [];
+      const next = new Map<string, ExamRoomDoc>();
       snapshot.forEach((d) => {
-        const data = d.data() as ExamRoomDoc;
-        list.push({ ...data, id: d.id });
+        const docObj = normalizeRoomDoc(d.data(), d.id);
+        next.set(docObj.roomCode, docObj);
       });
-      list.sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      );
-      onUpdate(list);
+      primaryMap = next;
+      emitMerged();
     },
     (error) => {
       if (onError) onError(error);
@@ -211,29 +328,58 @@ export function subscribeToPublishedExams(
     }
   );
 
-  return unsubscribe;
+  const unsubLegacy = onSnapshot(
+    legacyExamsCol,
+    (snapshot) => {
+      const next = new Map<string, ExamRoomDoc>();
+      snapshot.forEach((d) => {
+        const docObj = normalizeRoomDoc(d.data(), d.id);
+        next.set(docObj.roomCode, docObj);
+      });
+      legacyMap = next;
+      emitMerged();
+    },
+    () => {
+      // ignore legacy error
+    }
+  );
+
+  return () => {
+    unsubPrimary();
+    unsubLegacy();
+  };
 }
 
-// 4. Submit student test result to `exams/{roomId}/submissions/{subId}` (and `rooms` backup)
+// 4. Submit student test result to `exam_submissions/{roomCode}/students/{submissionId}` (and `exams/{roomCode}/submissions` backup)
 export async function submitStudentResult(
   roomId: string,
   submissionData: Omit<StudentSubmissionDoc, 'id'>
 ): Promise<string> {
   const subId = `sub_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-  const targetDocId = submissionData.roomCode || roomId;
-  const path = `exams/${targetDocId}/submissions/${subId}`;
+  const targetRoomCode = (submissionData.roomCode || roomId).trim();
+  const path = `exam_submissions/${targetRoomCode}/students/${subId}`;
 
   const fullData: StudentSubmissionDoc = sanitizeForFirestore({
     ...submissionData,
     id: subId,
+    roomCode: targetRoomCode,
+    score: {
+      total: submissionData.scoreTotal,
+      part1: submissionData.scorePart1,
+      part2: submissionData.scorePart2,
+      part3: submissionData.scorePart3,
+    },
+    timeSpent: submissionData.timeSpentSeconds,
   });
 
   try {
-    await setDoc(doc(db, 'exams', targetDocId, 'submissions', subId), fullData);
+    // Primary standardized path: `exam_submissions/{roomCode}/students/{submissionId}`
+    await setDoc(doc(db, 'exam_submissions', targetRoomCode, 'students', subId), fullData);
     try {
+      await setDoc(doc(db, 'exams', targetRoomCode, 'submissions', subId), fullData);
       await setDoc(doc(db, 'rooms', roomId, 'submissions', subId), fullData);
     } catch {
-      // ignore secondary mirror error if room only exists in exams
+      // ignore secondary mirror error
     }
     return subId;
   } catch (error) {
@@ -241,26 +387,40 @@ export async function submitStudentResult(
   }
 }
 
-// 5. Real-time subscription to room submissions (for teacher dashboard)
+// 5. Real-time subscription to room submissions from `exam_submissions/{roomCode}/students` (merged with legacy `exams/{roomCode}/submissions`)
 export function subscribeToSubmissions(
   roomId: string,
   onUpdate: (submissions: StudentSubmissionDoc[]) => void,
   onError?: (err: any) => void
 ): () => void {
-  const path = `exams/${roomId}/submissions`;
-  const subCol = collection(db, 'exams', roomId, 'submissions');
+  const cleanRoomCode = roomId.trim();
+  const path = `exam_submissions/${cleanRoomCode}/students`;
+  const primaryCol = collection(db, 'exam_submissions', cleanRoomCode, 'students');
+  const legacyCol = collection(db, 'exams', cleanRoomCode, 'submissions');
 
-  const unsubscribe = onSnapshot(
-    subCol,
+  let primarySubs = new Map<string, StudentSubmissionDoc>();
+  let legacySubs = new Map<string, StudentSubmissionDoc>();
+
+  const emitMerged = () => {
+    const merged = new Map<string, StudentSubmissionDoc>();
+    legacySubs.forEach((v, k) => merged.set(k, v));
+    primarySubs.forEach((v, k) => merged.set(k, v));
+    const list = Array.from(merged.values()).sort(
+      (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+    );
+    onUpdate(list);
+  };
+
+  const unsubPrimary = onSnapshot(
+    primaryCol,
     (snapshot) => {
-      const list: StudentSubmissionDoc[] = [];
+      const next = new Map<string, StudentSubmissionDoc>();
       snapshot.forEach((d) => {
-        list.push(d.data() as StudentSubmissionDoc);
+        const sub = normalizeSubmissionDoc(d.data(), d.id);
+        next.set(sub.id, sub);
       });
-      list.sort(
-        (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
-      );
-      onUpdate(list);
+      primarySubs = next;
+      emitMerged();
     },
     (error) => {
       if (onError) onError(error);
@@ -268,19 +428,48 @@ export function subscribeToSubmissions(
     }
   );
 
-  return unsubscribe;
+  const unsubLegacy = onSnapshot(
+    legacyCol,
+    (snapshot) => {
+      const next = new Map<string, StudentSubmissionDoc>();
+      snapshot.forEach((d) => {
+        const sub = normalizeSubmissionDoc(d.data(), d.id);
+        next.set(sub.id, sub);
+      });
+      legacySubs = next;
+      emitMerged();
+    },
+    () => {
+      // ignore legacy error
+    }
+  );
+
+  return () => {
+    unsubPrimary();
+    unsubLegacy();
+  };
 }
 
-// 6. Update room status (open / closed)
+// 6. Update room status (open / closed) in `exam_rooms/{roomCode}` (and `exams`/`rooms`)
 export async function updateRoomStatus(
   roomId: string,
   status: 'open' | 'closed'
 ): Promise<void> {
-  const path = `exams/${roomId}`;
+  const cleanCode = roomId.trim();
+  const path = `exam_rooms/${cleanCode}`;
   try {
-    await updateDoc(doc(db, 'exams', roomId), { status });
     try {
-      await updateDoc(doc(db, 'rooms', roomId), { status });
+      await updateDoc(doc(db, 'exam_rooms', cleanCode), { status });
+    } catch {
+      // If room only existed in legacy `exams`, copy or update there
+    }
+    try {
+      await updateDoc(doc(db, 'exams', cleanCode), { status });
+    } catch {
+      // ignore if not in legacy exams
+    }
+    try {
+      await updateDoc(doc(db, 'rooms', cleanCode), { status });
     } catch {
       // ignore if not in legacy rooms
     }
@@ -289,15 +478,25 @@ export async function updateRoomStatus(
   }
 }
 
-// 7. Delete an exam room
+// 7. Delete an exam room from `exam_rooms/{roomCode}` (and `exams`/`rooms`)
 export async function deleteRoom(roomId: string): Promise<void> {
-  const path = `exams/${roomId}`;
+  const cleanCode = roomId.trim();
+  const path = `exam_rooms/${cleanCode}`;
   try {
-    await deleteDoc(doc(db, 'exams', roomId));
     try {
-      await deleteDoc(doc(db, 'rooms', roomId));
+      await deleteDoc(doc(db, 'exam_rooms', cleanCode));
     } catch {
-      // ignore if not in legacy rooms
+      // ignore
+    }
+    try {
+      await deleteDoc(doc(db, 'exams', cleanCode));
+    } catch {
+      // ignore
+    }
+    try {
+      await deleteDoc(doc(db, 'rooms', cleanCode));
+    } catch {
+      // ignore
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
@@ -381,13 +580,13 @@ export function getResolvedPublicAppUrl(customUrlOverride?: string): string {
 
 /**
  * Builds the direct student exam link using combined Query Param + Hash Routing:
- * `${baseUrl}?room=${roomCode}#room=${roomCode}` (e.g. `https://...run.app/?room=3203#room=3203`)
+ * `${baseUrl}?mode=student&room=${roomCode}#room=${roomCode}`
  * Never appends `/room/...` or `/exam/...` sub-paths and never auto-mutates `window.location.origin`.
  */
 export function buildStudentRoomLink(roomCode: string, customBaseUrl?: string): string {
   const baseUrl = getResolvedPublicAppUrl(customBaseUrl);
   const cleanCode = encodeURIComponent((roomCode || '').trim());
-  return `${baseUrl}?room=${cleanCode}#room=${cleanCode}`;
+  return `${baseUrl}?mode=student&room=${cleanCode}#room=${cleanCode}`;
 }
 
 /**
@@ -409,6 +608,7 @@ export async function savePublicAppUrlSetting(rawUrl: string): Promise<string> {
     await setDoc(
       doc(db, 'settings', 'publicConfig'),
       sanitizeForFirestore({
+        publicAppUrl: normalized,
         customPublicAppUrl: normalized,
         updatedAt: new Date().toISOString(),
       })
@@ -430,8 +630,9 @@ export async function loadPublicAppUrlSetting(): Promise<string> {
     const snap = await getDoc(doc(db, 'settings', 'publicConfig'));
     if (snap.exists()) {
       const data = snap.data();
-      if (data && typeof data.customPublicAppUrl === 'string') {
-        const trimmed = data.customPublicAppUrl.trim();
+      const rawField = data?.customPublicAppUrl ?? data?.publicAppUrl;
+      if (typeof rawField === 'string') {
+        const trimmed = rawField.trim();
         const normalized = trimmed ? normalizePublicBaseUrl(trimmed) : '';
         if (typeof window !== 'undefined') {
           if (normalized) {
@@ -495,6 +696,32 @@ export function extractRoomCodeFromLocation(): string | null {
     // ignore URL parse error
   }
   return null;
+}
+
+/**
+ * Checks whether the current URL indicates Student Portal mode:
+ * - `?mode=student`
+ * - `?room=XXXX` or `?code=XXXX`
+ * - `#room=XXXX` or `#XXXX`
+ */
+export function isStudentPortalLocation(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const searchParams = new URLSearchParams(window.location.search);
+    if (searchParams.get('mode')?.toLowerCase() === 'student') {
+      return true;
+    }
+    if (extractRoomCodeFromLocation()) {
+      return true;
+    }
+    const rawHash = (window.location.hash || '').toLowerCase();
+    if (rawHash.includes('mode=student')) {
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
 }
 
 

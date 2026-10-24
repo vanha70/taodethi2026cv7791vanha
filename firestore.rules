@@ -15,9 +15,6 @@ service cloud.firestore {
 
     function isValidRoom(data) {
       return data.roomCode is string && data.roomCode.size() >= 4 && data.roomCode.size() <= 10 &&
-             data.title is string && data.title.size() <= 200 &&
-             data.subject is string && data.subject.size() <= 100 &&
-             data.durationMinutes is number && data.durationMinutes > 0 &&
              data.status in ['open', 'closed'] &&
              data.createdAt is string;
     }
@@ -25,8 +22,35 @@ service cloud.firestore {
     function isValidSubmission(data) {
       return data.roomCode is string && data.roomCode.size() <= 10 &&
              data.studentName is string && data.studentName.size() >= 2 && data.studentName.size() <= 100 &&
-             data.scoreTotal is number && data.scoreTotal >= 0 && data.scoreTotal <= 10 &&
              data.submittedAt is string;
+    }
+
+    // Standardized Exam Rooms collection: exam_rooms/{roomCode}
+    match /exam_rooms/{roomCode} {
+      allow get: if isValidId(roomCode);
+      allow list: if true;
+
+      allow create: if isValidId(roomCode) && isValidRoom(request.resource.data);
+      allow update: if isValidId(roomCode) &&
+                       isValidRoom(request.resource.data) &&
+                       request.resource.data.roomCode == resource.data.roomCode;
+      allow delete: if isValidId(roomCode);
+    }
+
+    // Standardized Exam Submissions collection: exam_submissions/{roomCode}/students/{submissionId}
+    match /exam_submissions/{roomCode} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(roomCode);
+
+      match /students/{submissionId} {
+        allow get: if isValidId(roomCode) && isValidId(submissionId);
+        allow list: if isValidId(roomCode);
+
+        allow create: if isValidId(roomCode) &&
+                         isValidId(submissionId) &&
+                         isValidSubmission(request.resource.data);
+        allow update, delete: if false;
+      }
     }
 
     // Published Exams collection (Document ID = 4-digit Room Code, e.g. 1003)
@@ -81,9 +105,7 @@ service cloud.firestore {
     // App Settings collection (e.g. settings/publicConfig for Public App URL)
     match /settings/{settingId} {
       allow get, list: if true;
-      allow create, update: if isValidId(settingId) &&
-                               request.resource.data.publicAppUrl is string &&
-                               request.resource.data.publicAppUrl.size() <= 500;
+      allow create, update: if isValidId(settingId);
       allow delete: if isValidId(settingId);
     }
   }

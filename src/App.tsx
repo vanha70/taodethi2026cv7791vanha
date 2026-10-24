@@ -28,7 +28,7 @@ import { WordExportModal } from './components/WordExportModal';
 import {
   ExamRoomDoc,
   extractRoomCodeFromLocation,
-  findRoomByCode,
+  isStudentPortalLocation,
 } from './services/roomService';
 import { safeLocalStorage } from './utils/browserSafeguards';
 
@@ -51,12 +51,12 @@ export default function App() {
   const [urlRoomCode, setUrlRoomCode] = useState<string | null>(() =>
     extractRoomCodeFromLocation()
   );
-  const [isLoadingUrlRoom, setIsLoadingUrlRoom] = useState<boolean>(() =>
-    Boolean(extractRoomCodeFromLocation())
+  const [isStudentPortalMode, setIsStudentPortalMode] = useState<boolean>(() =>
+    isStudentPortalLocation()
   );
 
   const [activeTab, setActiveTab] = useState<'editor' | 'matrix' | 'test' | 'preview' | 'rooms'>(
-    () => (extractRoomCodeFromLocation() ? 'rooms' : 'editor')
+    () => (isStudentPortalLocation() ? 'rooms' : 'editor')
   );
   const [studentSession, setStudentSession] = useState<{
     room: ExamRoomDoc;
@@ -92,12 +92,18 @@ export default function App() {
     }
   }, [exam]);
 
-  // Listen for ?room= in window.location.search or window.location.hash (including hashchange / popstate)
+  // Listen for ?room= / #room= / ?mode=student in window.location (including hashchange / popstate)
+  // Always route student links to the standalone CỔNG VÀO PHÒNG THI TRỰC TUYẾN first (never bypass login)
   useEffect(() => {
     const syncRoomFromUrl = () => {
-      const detected = extractRoomCodeFromLocation();
-      if (detected) {
-        setUrlRoomCode(detected);
+      const detectedCode = extractRoomCodeFromLocation();
+      const detectedStudentMode = isStudentPortalLocation();
+      if (detectedCode) {
+        setUrlRoomCode(detectedCode);
+      }
+      if (detectedStudentMode) {
+        setIsStudentPortalMode(true);
+        setActiveTab((prev) => (prev === 'test' ? 'test' : 'rooms'));
       }
     };
     window.addEventListener('hashchange', syncRoomFromUrl);
@@ -107,53 +113,6 @@ export default function App() {
       window.removeEventListener('popstate', syncRoomFromUrl);
     };
   }, []);
-
-  // Automatically fetch exam from Firebase when student opens link / QR with ?room=3203 and open test screen directly
-  useEffect(() => {
-    if (!urlRoomCode) return;
-    let cancelled = false;
-    setIsLoadingUrlRoom(true);
-
-    findRoomByCode(urlRoomCode)
-      .then((room) => {
-        if (cancelled) return;
-        if (room && room.status === 'open') {
-          const defaultClass =
-            room.targetClass && !room.targetClass.startsWith('Khối')
-              ? room.targetClass
-              : room.grade || '12A1';
-          setStudentSession({
-            room,
-            studentInfo: {
-              name: '',
-              className: defaultClass,
-              sbd: '',
-            },
-          });
-          setActiveTab('test');
-          showToast(
-            `Đã tải đề thi "${room.title}" (Mã phòng: ${room.roomCode}) từ Firebase! Hãy điền Họ tên & làm bài.`
-          );
-        } else {
-          setActiveTab('rooms');
-        }
-      })
-      .catch((err) => {
-        console.error('Auto-load room from URL error:', err);
-        if (!cancelled) {
-          setActiveTab('rooms');
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsLoadingUrlRoom(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [urlRoomCode]);
 
   // Global Keyboard Shortcuts (Ctrl+S, Ctrl+P, Ctrl+Shift+E, etc.)
   useEffect(() => {
@@ -316,28 +275,30 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Top Header */}
-      <ExamHeader
-        metadata={exam.metadata}
-        onUpdateMetadata={(meta) => setExam({ ...exam, metadata: meta })}
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        onOpenAiModal={() => setIsAiModalOpen(true)}
-        onOpenRawImport={() => setIsRawImportOpen(true)}
-        onOpenShuffleModal={() => setIsShuffleOpen(true)}
-        onExportDocx={handleExportDocx}
-        onPrintExam={handlePrint}
-        onSelectSample={handleSelectSample}
-        totalQuestions={totalQuestions}
-        lastSavedTime={lastSavedTime}
-        isSaving={isSaving}
-        onOpenShortcutsModal={() => setIsShortcutsModalOpen(true)}
-      />
+      {/* Main Top Header (Completely hidden in Independent Student Portal Mode or when Student is taking an exam) */}
+      {!isStudentPortalMode && !studentSession && (
+        <ExamHeader
+          metadata={exam.metadata}
+          onUpdateMetadata={(meta) => setExam({ ...exam, metadata: meta })}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          onOpenAiModal={() => setIsAiModalOpen(true)}
+          onOpenRawImport={() => setIsRawImportOpen(true)}
+          onOpenShuffleModal={() => setIsShuffleOpen(true)}
+          onExportDocx={handleExportDocx}
+          onPrintExam={handlePrint}
+          onSelectSample={handleSelectSample}
+          totalQuestions={totalQuestions}
+          lastSavedTime={lastSavedTime}
+          isSaving={isSaving}
+          onOpenShortcutsModal={() => setIsShortcutsModalOpen(true)}
+        />
+      )}
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {/* Quick Header Config Bar (Editable Title, School, Time) */}
-        {activeTab !== 'test' && (
+        {/* Quick Header Config Bar (Editable Title, School, Time) - Hidden in Student Mode */}
+        {!isStudentPortalMode && !studentSession && activeTab !== 'test' && (
           <div className="mb-6 bg-white p-4 rounded-xl border border-slate-200/90 shadow-2xs flex flex-wrap items-center justify-between gap-3 text-xs text-slate-700 print:hidden">
             <div className="flex flex-wrap items-center gap-3">
               <span className="font-bold text-slate-900">{exam.metadata.schoolName}</span>
@@ -447,6 +408,16 @@ export default function App() {
         {activeTab === 'test' && (
           <OnlineTestRoom
             exam={studentSession ? studentSession.room.examData : exam}
+            onUpdateExam={(updatedExam) => {
+              if (studentSession) {
+                setStudentSession({
+                  ...studentSession,
+                  room: { ...studentSession.room, examData: updatedExam },
+                });
+              } else {
+                setExam(updatedExam);
+              }
+            }}
             studentInfo={studentSession ? studentSession.studentInfo : undefined}
             roomId={studentSession ? studentSession.room.id : undefined}
             roomCode={studentSession ? studentSession.room.roomCode : undefined}
@@ -462,20 +433,20 @@ export default function App() {
           />
         )}
 
-        {/* TAB 5: ONLINE ROOM MANAGER & FIREBASE DASHBOARD */}
-        {activeTab === 'rooms' && (
-          <>
-            {isLoadingUrlRoom && urlRoomCode && (
-              <div className="mb-4 p-4 rounded-2xl bg-indigo-50 border border-indigo-200 text-indigo-950 text-xs sm:text-sm font-bold flex items-center justify-center gap-2.5 shadow-2xs">
-                <span className="w-3 h-3 rounded-full bg-indigo-600 animate-ping"></span>
-                <span>
-                  Đang kết nối Firebase tải đề thi của Mã phòng <strong>{urlRoomCode}</strong>...
-                </span>
-              </div>
-            )}
+        {/* TAB 5: ONLINE ROOM MANAGER & FIREBASE DASHBOARD (OR STANDALONE STUDENT PORTAL) */}
+        {(activeTab === 'rooms' || (isStudentPortalMode && !studentSession)) &&
+          activeTab !== 'test' && (
             <OnlineRoomManager
               currentExam={exam}
               initialRoomCode={urlRoomCode}
+              standaloneStudentMode={isStudentPortalMode}
+              onExitStandaloneStudentMode={() => {
+                setIsStudentPortalMode(false);
+                if (typeof window !== 'undefined' && window.history?.replaceState) {
+                  window.history.replaceState({}, '', window.location.pathname);
+                }
+                setActiveTab('rooms');
+              }}
               onUpdateExamMetadata={(examCode, grade, durationMinutes, examTitle) => {
                 setExam((prev) => ({
                   ...prev,
@@ -491,11 +462,10 @@ export default function App() {
               onStudentStartTest={(room, studentInfo) => {
                 setStudentSession({ room, studentInfo });
                 setActiveTab('test');
-                showToast(`Chào mừng ${studentInfo.name} vào phòng thi ${room.roomCode}!`);
+                showToast(`Chào mừng ${studentInfo.name} (${studentInfo.className}) vào phòng thi ${room.roomCode}!`);
               }}
             />
-          </>
-        )}
+          )}
       </main>
 
       {/* METADATA EDIT MODAL */}
