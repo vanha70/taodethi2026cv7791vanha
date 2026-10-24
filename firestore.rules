@@ -1,0 +1,90 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net default-deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidRoom(data) {
+      return data.roomCode is string && data.roomCode.size() >= 4 && data.roomCode.size() <= 10 &&
+             data.title is string && data.title.size() <= 200 &&
+             data.subject is string && data.subject.size() <= 100 &&
+             data.durationMinutes is number && data.durationMinutes > 0 &&
+             data.status in ['open', 'closed'] &&
+             data.createdAt is string;
+    }
+
+    function isValidSubmission(data) {
+      return data.roomCode is string && data.roomCode.size() <= 10 &&
+             data.studentName is string && data.studentName.size() >= 2 && data.studentName.size() <= 100 &&
+             data.scoreTotal is number && data.scoreTotal >= 0 && data.scoreTotal <= 10 &&
+             data.submittedAt is string;
+    }
+
+    // Published Exams collection (Document ID = 4-digit Room Code, e.g. 1003)
+    match /exams/{examId} {
+      allow get: if isValidId(examId);
+      allow list: if true;
+
+      allow create: if isValidId(examId) && isValidRoom(request.resource.data);
+      allow update: if isValidId(examId) &&
+                       isValidRoom(request.resource.data) &&
+                       request.resource.data.roomCode == resource.data.roomCode;
+      allow delete: if isValidId(examId);
+
+      match /submissions/{submissionId} {
+        allow get: if isValidId(examId) && isValidId(submissionId);
+        allow list: if isValidId(examId);
+
+        allow create: if isValidId(examId) &&
+                         isValidId(submissionId) &&
+                         isValidSubmission(request.resource.data);
+        allow update, delete: if false;
+      }
+    }
+
+    // Exam Rooms collection
+    match /rooms/{roomId} {
+      // Anyone can get or list rooms to find an exam room by code
+      allow get: if isValidId(roomId);
+      allow list: if true;
+
+      // Teachers can create and update room status
+      allow create: if isValidId(roomId) && isValidRoom(request.resource.data);
+      allow update: if isValidId(roomId) &&
+                       isValidRoom(request.resource.data) &&
+                       request.resource.data.roomCode == resource.data.roomCode;
+      allow delete: if isValidId(roomId);
+
+      // Submissions subcollection
+      match /submissions/{submissionId} {
+        // Teacher and students can read submissions for this room
+        allow get: if isValidId(roomId) && isValidId(submissionId);
+        allow list: if isValidId(roomId);
+
+        // Students can submit their test results
+        allow create: if isValidId(roomId) &&
+                         isValidId(submissionId) &&
+                         isValidSubmission(request.resource.data);
+        allow update, delete: if false; // Submissions are immutable once submitted
+      }
+    }
+
+    // App Settings collection (e.g. settings/publicConfig for Public App URL)
+    match /settings/{settingId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(settingId) &&
+                               request.resource.data.publicAppUrl is string &&
+                               request.resource.data.publicAppUrl.size() <= 500;
+      allow delete: if isValidId(settingId);
+    }
+  }
+}

@@ -1,0 +1,1583 @@
+import React, { useState, useEffect } from 'react';
+import {
+  Clock,
+  CheckCircle2,
+  Award,
+  X,
+  FileCheck,
+  Pause,
+  Play,
+  RotateCcw,
+  Timer,
+  Bell,
+  ChevronDown,
+  Shuffle,
+  ShieldCheck,
+} from 'lucide-react';
+import { ExamData, Part1Question, Part2Question, Part3Question } from '../types/exam';
+import { MathChemView } from './MathChemView';
+import { submitStudentResult } from '../services/roomService';
+import { stripLeakedAnswerMarkers } from '../utils/chemMathNormalizer';
+import { permutePart1QuestionOptions, isFixedAtDOptionText } from '../utils/shuffler';
+
+// Fisher-Yates array shuffle helper
+function shuffleArray<T>(arr: T[]): T[] {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+/**
+ * Helper to compare Part III numeric short answers so that comma ',' and dot '.'
+ * in decimals are treated identically (e.g. "2,5" === "2.5", "-1,5" === "-1.5", "7,04" === "7.04").
+ */
+export function isShortAnswerMatch(studentRaw: string, correctRaw: string): boolean {
+  const sClean = (studentRaw || '').trim().replace(/\s+/g, '').replace(/,/g, '.');
+  const cClean = (correctRaw || '').trim().replace(/\s+/g, '').replace(/,/g, '.');
+  if (!sClean || !cClean) return false;
+  if (sClean === cClean) return true;
+
+  const sNum = Number(sClean);
+  const cNum = Number(cClean);
+  if (!Number.isNaN(sNum) && !Number.isNaN(cNum)) {
+    return Math.abs(sNum - cNum) < 1e-6;
+  }
+  return false;
+}
+
+/**
+ * Smart Shuffle builder per separate section (Part I -> Part II -> Part III):
+ * - Shuffles question order ONLY within each part and re-numbers Part I (1..18), Part II (1..4), Part III (1..6).
+ * - In Part I: shuffles options A, B, C, D EXCEPT options like "Cả A, B, C đều đúng" which stay fixed at D,
+ *   while updating correctAnswer accurately.
+ * - In Part II: can either keep or shuffle the 4 statements a), b), c), d) while updating True/False keys
+ *   and re-labeling display order as a), b), c), d).
+ */
+function createSmartShuffledExam(
+  sourceExam: ExamData,
+  enableShuffle: boolean,
+  shufflePart2SubItems: boolean = true
+): {
+  part1: Part1Question[];
+  part2: Part2Question[];
+  part3: Part3Question[];
+  examVariantCode: string;
+} {
+  const fixedItemLabels: ('a' | 'b' | 'c' | 'd')[] = ['a', 'b', 'c', 'd'];
+
+  if (!enableShuffle) {
+    return {
+      part1: sourceExam.part1.map((q, idx) => ({
+        ...q,
+        id: idx + 1,
+        content: stripLeakedAnswerMarkers(q.content),
+        options: {
+          A: stripLeakedAnswerMarkers(q.options.A),
+          B: stripLeakedAnswerMarkers(q.options.B),
+          C: stripLeakedAnswerMarkers(q.options.C),
+          D: stripLeakedAnswerMarkers(q.options.D),
+        },
+      })),
+      part2: sourceExam.part2.map((q, idx) => ({
+        ...q,
+        id: idx + 1,
+        content: stripLeakedAnswerMarkers(q.content),
+        items: q.items.map((it, itemIdx) => ({
+          ...it,
+          label: fixedItemLabels[itemIdx] || it.label,
+          text: stripLeakedAnswerMarkers(it.text),
+        })),
+      })),
+      part3: sourceExam.part3.map((q, idx) => ({
+        ...q,
+        id: idx + 1,
+        content: stripLeakedAnswerMarkers(q.content),
+      })),
+      examVariantCode: sourceExam.metadata.examCode || '101',
+    };
+  }
+
+  // 1. Shuffle Part I questions (re-indexed 1..18) and shuffle A, B, C, D (keeping "Cả A, B, C đều đúng" fixed at D)
+  const shuffledPart1: Part1Question[] = shuffleArray(sourceExam.part1).map((q, idx) => {
+    const permuted = permutePart1QuestionOptions(q, shuffleArray);
+    return {
+      ...q,
+      id: idx + 1,
+      content: stripLeakedAnswerMarkers(q.content),
+      options: permuted.options,
+      correctAnswer: permuted.correctAnswer,
+    };
+  });
+
+  // 2. Shuffle Part II questions (re-indexed 1..4) and optionally shuffle statements a), b), c), d)
+  const shuffledPart2: Part2Question[] = shuffleArray(sourceExam.part2).map((q, idx) => {
+    const sourceItems = shufflePart2SubItems ? shuffleArray(q.items) : [...q.items];
+    const permutedItems = sourceItems.map((it, itemIdx) => ({
+      ...it,
+      label: fixedItemLabels[itemIdx] || it.label,
+      text: stripLeakedAnswerMarkers(it.text),
+    }));
+
+    return {
+      ...q,
+      id: idx + 1,
+      content: stripLeakedAnswerMarkers(q.content),
+      items: permutedItems,
+    };
+  });
+
+  // 3. Shuffle Part III questions (re-indexed 1..6)
+  const shuffledPart3: Part3Question[] = shuffleArray(sourceExam.part3).map((q, idx) => ({
+    ...q,
+    id: idx + 1,
+    content: stripLeakedAnswerMarkers(q.content),
+  }));
+
+  const randomCode = String(Math.floor(100 + Math.random() * 900));
+
+  return {
+    part1: shuffledPart1,
+    part2: shuffledPart2,
+    part3: shuffledPart3,
+    examVariantCode: randomCode,
+  };
+}
+
+interface OnlineTestRoomProps {
+  exam: ExamData;
+  onExitTest: () => void;
+  studentInfo?: {
+    name: string;
+    className: string;
+    sbd: string;
+  };
+  roomId?: string;
+  roomCode?: string;
+  allowReview?: boolean;
+}
+
+export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
+  exam,
+  onExitTest,
+  studentInfo,
+  roomId,
+  roomCode,
+}) => {
+  const initialTotalSeconds = Math.max(60, (exam.metadata.durationMinutes || 45) * 60);
+  const [totalDurationSeconds, setTotalDurationSeconds] = useState<number>(initialTotalSeconds);
+  const [timeLeft, setTimeLeft] = useState<number>(initialTotalSeconds);
+  const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [showTimerSettings, setShowTimerSettings] = useState<boolean>(false);
+  const [showSubmitConfirmModal, setShowSubmitConfirmModal] = useState<boolean>(false);
+  const [milestoneAlert, setMilestoneAlert] = useState<string | null>(null);
+
+  // Smart Shuffle State (Automatically shuffles questions within each part and options A/B/C/D)
+  const [isSmartShuffleEnabled, setIsSmartShuffleEnabled] = useState<boolean>(true);
+  const [shufflePart2Items, setShufflePart2Items] = useState<boolean>(true);
+  const [activeExamState, setActiveExamState] = useState(() =>
+    createSmartShuffledExam(exam, true, true)
+  );
+
+  useEffect(() => {
+    setActiveExamState(createSmartShuffledExam(exam, isSmartShuffleEnabled, shufflePart2Items));
+    setPart1Answers({});
+    setPart2Answers({});
+    setPart3Answers({});
+    setIsSubmitted(false);
+  }, [exam]);
+
+  const [isSubmitted, setIsSubmitted] = useState<boolean>(false);
+  const [isSubmittingToFirebase, setIsSubmittingToFirebase] = useState<boolean>(false);
+
+  // Editable student info when entering directly via ?room=3203 or QR scan
+  const [localStudentName, setLocalStudentName] = useState<string>(studentInfo?.name || '');
+  const [localStudentClass, setLocalStudentClass] = useState<string>(
+    studentInfo?.className || exam.metadata.grade || '12A1'
+  );
+  const [localStudentSbd, setLocalStudentSbd] = useState<string>(studentInfo?.sbd || '');
+  const [submitIdentityError, setSubmitIdentityError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (studentInfo) {
+      if (studentInfo.name) setLocalStudentName(studentInfo.name);
+      if (studentInfo.className) setLocalStudentClass(studentInfo.className);
+      if (studentInfo.sbd) setLocalStudentSbd(studentInfo.sbd);
+    }
+  }, [studentInfo]);
+
+  // Student answers
+  const [part1Answers, setPart1Answers] = useState<Record<number, 'A' | 'B' | 'C' | 'D'>>({});
+  const [part2Answers, setPart2Answers] = useState<
+    Record<number, Record<'a' | 'b' | 'c' | 'd', boolean | null>>
+  >({});
+  const [part3Answers, setPart3Answers] = useState<Record<number, string>>({});
+
+  const handleReshuffleNewAttempt = (
+    enableShuffle: boolean,
+    nextShufflePart2: boolean = shufflePart2Items
+  ) => {
+    setIsSmartShuffleEnabled(enableShuffle);
+    setShufflePart2Items(nextShufflePart2);
+    setActiveExamState(createSmartShuffledExam(exam, enableShuffle, nextShufflePart2));
+    setPart1Answers({});
+    setPart2Answers({});
+    setPart3Answers({});
+    setIsSubmitted(false);
+    setTimeLeft(totalDurationSeconds);
+  };
+
+  // Sanitize Part III input: only allow digits 0-9, minus sign '-', comma ',', dot '.', max 4 characters
+  const handlePart3InputChange = (qId: number, rawValue: string) => {
+    // Keep only digits, '-', ',', '.'
+    let cleaned = rawValue.replace(/[^0-9.,-]/g, '');
+    // Minus sign only allowed at the first character
+    if (cleaned.indexOf('-') > 0) {
+      cleaned = (cleaned.startsWith('-') ? '-' : '') + cleaned.replace(/-/g, '');
+    }
+    // Enforce max 4 characters as required by standard answer sheet
+    if (cleaned.length > 4) {
+      cleaned = cleaned.slice(0, 4);
+    }
+    setPart3Answers((prev) => ({ ...prev, [qId]: cleaned }));
+  };
+
+  // Countdown timer effect
+  useEffect(() => {
+    if (isSubmitted || isPaused || timeLeft <= 0) return;
+    const interval = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          handleDoSubmit(true);
+          return 0;
+        }
+        const nextVal = prev - 1;
+        if (nextVal === 600) {
+          setMilestoneAlert('Còn 10 phút làm bài! Hãy kiểm tra lại các câu chưa điền đáp án.');
+        } else if (nextVal === 300) {
+          setMilestoneAlert('Cảnh báo: Chỉ còn 5 phút cuối cùng trước khi hệ thống tự động thu bài!');
+        } else if (nextVal === 60) {
+          setMilestoneAlert('Còn 60 giây cuối cùng! Hệ thống sẽ tự động nộp bài khi hết giờ.');
+        }
+        return nextVal;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isSubmitted, isPaused, timeLeft]);
+
+  const formatTimeSegments = (secs: number) => {
+    const hrs = Math.floor(secs / 3600);
+    const mins = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    return {
+      hrs: hrs > 0 ? hrs.toString().padStart(2, '0') : null,
+      mins: mins.toString().padStart(2, '0'),
+      secs: s.toString().padStart(2, '0'),
+      formatted:
+        hrs > 0
+          ? `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${s
+              .toString()
+              .padStart(2, '0')}`
+          : `${mins.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`,
+    };
+  };
+
+  const handleSelectCustomDuration = (minutes: number) => {
+    const newTotal = minutes * 60;
+    setTotalDurationSeconds(newTotal);
+    setTimeLeft(newTotal);
+    setIsPaused(false);
+    setShowTimerSettings(false);
+  };
+
+  const handleResetTimer = () => {
+    setTimeLeft(totalDurationSeconds);
+    setIsPaused(false);
+    setShowTimerSettings(false);
+  };
+
+  /**
+   * Standard Auto-Grading Scale (Total 10.0 points):
+   * - Part I (4.5 points for 18 questions): 0.25 points / correct question.
+   * - Part II (4.0 points for 4 questions, max 1.0 point / question):
+   *     + 1 correct statement: 0.1 point
+   *     + 2 correct statements: 0.25 points
+   *     + 3 correct statements: 0.5 points
+   *     + All 4 correct statements (a, b, c, d): 1.0 point
+   * - Part III (1.5 points for 6 questions): 0.25 points / correct question
+   *   (automatically treats '.' and ',' in decimals identically, e.g. 2,5 === 2.5).
+   */
+  const calculateScore = () => {
+    let scoreP1 = 0;
+    let scoreP2 = 0;
+    let scoreP3 = 0;
+    let correctCountP1 = 0;
+    let correctCountP3 = 0;
+    const part2QuestionScores: Record<number, { correctSubCount: number; points: number }> = {};
+
+    // Part I: 0.25 pts per question
+    activeExamState.part1.forEach((q) => {
+      if (part1Answers[q.id] === q.correctAnswer) {
+        scoreP1 += 0.25;
+        correctCountP1++;
+      }
+    });
+
+    // Part II: 1 -> 0.1đ, 2 -> 0.25đ, 3 -> 0.5đ, 4 -> 1.0đ
+    activeExamState.part2.forEach((q) => {
+      const studentQAns = part2Answers[q.id] || { a: null, b: null, c: null, d: null };
+      let correctSubCount = 0;
+      q.items.forEach((item) => {
+        if (studentQAns[item.label] === item.isCorrect) {
+          correctSubCount++;
+        }
+      });
+
+      let qPts = 0;
+      if (correctSubCount === 1) qPts = 0.1;
+      else if (correctSubCount === 2) qPts = 0.25;
+      else if (correctSubCount === 3) qPts = 0.5;
+      else if (correctSubCount === 4) qPts = 1.0;
+
+      scoreP2 += qPts;
+      part2QuestionScores[q.id] = { correctSubCount, points: qPts };
+    });
+
+    // Part III: 0.25 pts per question (comma ',' and dot '.' treated identically)
+    activeExamState.part3.forEach((q) => {
+      if (isShortAnswerMatch(part3Answers[q.id] || '', q.correctAnswer)) {
+        scoreP3 += 0.25;
+        correctCountP3++;
+      }
+    });
+
+    const totalScore = Number((scoreP1 + scoreP2 + scoreP3).toFixed(2));
+    return {
+      scoreP1: Number(scoreP1.toFixed(2)),
+      scoreP2: Number(scoreP2.toFixed(2)),
+      scoreP3: Number(scoreP3.toFixed(2)),
+      totalScore,
+      correctCountP1,
+      correctCountP3,
+      part2QuestionScores,
+    };
+  };
+
+  const handleDoSubmit = async (isAutoTimerExpiry: boolean = false) => {
+    const resolvedName = (localStudentName || studentInfo?.name || '').trim();
+    const resolvedClass = (
+      localStudentClass ||
+      studentInfo?.className ||
+      exam.metadata.grade ||
+      '12A1'
+    ).trim();
+    const resolvedSbd =
+      (localStudentSbd || studentInfo?.sbd || '').trim() ||
+      `HS-${Math.floor(100 + Math.random() * 900)}`;
+
+    if (roomId && !isAutoTimerExpiry && resolvedName.length < 2) {
+      setSubmitIdentityError('Vui lòng nhập Họ và tên học sinh (tối thiểu 2 ký tự) trước khi nộp bài!');
+      setShowSubmitConfirmModal(true);
+      return;
+    }
+
+    setSubmitIdentityError(null);
+    setShowSubmitConfirmModal(false);
+    setIsPaused(false);
+    setIsSubmitted(true);
+    const scores = calculateScore();
+
+    if (roomId) {
+      try {
+        setIsSubmittingToFirebase(true);
+        const timeSpent = Math.max(0, totalDurationSeconds - timeLeft);
+        await submitStudentResult(roomId, {
+          roomId,
+          roomCode: roomCode || 'ROOM',
+          studentName: resolvedName.length >= 2 ? resolvedName : 'Học sinh trực tuyến',
+          studentClass: resolvedClass || '12A1',
+          studentId: resolvedSbd,
+          scoreTotal: scores.totalScore,
+          scorePart1: scores.scoreP1,
+          scorePart2: scores.scoreP2,
+          scorePart3: scores.scoreP3,
+          answersPart1: part1Answers,
+          answersPart2: part2Answers,
+          answersPart3: part3Answers,
+          timeSpentSeconds: timeSpent,
+          submittedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error('Failed to submit to Firebase:', err);
+      } finally {
+        setIsSubmittingToFirebase(false);
+      }
+    }
+  };
+
+  const results = isSubmitted ? calculateScore() : null;
+
+  // Progress tracking per part
+  const answeredP1Count = Object.keys(part1Answers).length;
+  const answeredP2Count = activeExamState.part2.filter((q) => {
+    const ansObj = part2Answers[q.id];
+    if (!ansObj) return false;
+    return Object.values(ansObj).some((v) => v !== null && v !== undefined);
+  }).length;
+  const answeredP3Count = Object.keys(part3Answers).filter((k) =>
+    Boolean(part3Answers[Number(k)]?.trim())
+  ).length;
+
+  const totalQuestions =
+    activeExamState.part1.length +
+    activeExamState.part2.length +
+    activeExamState.part3.length;
+  const answeredCount = answeredP1Count + answeredP2Count + answeredP3Count;
+
+  const elapsedSeconds = Math.max(0, totalDurationSeconds - timeLeft);
+  const timePercentRemaining = Math.max(
+    0,
+    Math.min(100, (timeLeft / Math.max(1, totalDurationSeconds)) * 100)
+  );
+  const remainingParts = formatTimeSegments(timeLeft);
+  const elapsedParts = formatTimeSegments(elapsedSeconds);
+  const isCriticalTime = !isSubmitted && timeLeft <= 300;
+  const isWarningTime = !isSubmitted && timeLeft > 300 && timeLeft <= 600;
+
+  return (
+    <div className="max-w-7xl mx-auto space-y-6 pb-12">
+      {/* Milestone Time Alert Toast */}
+      {milestoneAlert && !isSubmitted && (
+        <div className="bg-amber-50 border border-amber-300 text-amber-950 px-4 py-3 rounded-2xl shadow-sm flex items-center justify-between gap-3 animate-in fade-in">
+          <div className="flex items-center gap-2.5 text-xs sm:text-sm font-semibold">
+            <Bell className="w-4 h-4 text-amber-600 shrink-0 animate-bounce" />
+            <span>{milestoneAlert}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setMilestoneAlert(null)}
+            className="p-1 rounded-lg hover:bg-amber-200/60 text-amber-800 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Test Room Top Sticky Toolbar with Real-Time Countdown Widget & Per-Part Smart Shuffle Control */}
+      <div className="sticky top-20 z-20 bg-white/95 backdrop-blur-md p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200 uppercase">
+              PHÒNG THI TRỰC TUYẾN CHUẨN 3 PHẦN (10 ĐIỂM)
+            </span>
+            <span className="text-xs font-bold text-purple-800 bg-purple-50 px-2.5 py-1 rounded-md border border-purple-200 flex items-center gap-1">
+              <Shuffle className="w-3.5 h-3.5 text-purple-600" />
+              <span>
+                {isSmartShuffleEnabled
+                  ? `Mã đề trộn: ${activeExamState.examVariantCode}`
+                  : `Đề gốc: ${activeExamState.examVariantCode}`}
+              </span>
+            </span>
+            <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-semibold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Ẩn đáp án ngầm & Chuẩn hóa KaTeX (mhchem)</span>
+            </span>
+            {(localStudentName || studentInfo?.name) && (
+              <span className="text-xs font-semibold text-slate-600 bg-slate-100 px-2.5 py-1 rounded-md">
+                Thí sinh: <strong>{localStudentName || studentInfo?.name}</strong> (
+                {localStudentClass || studentInfo?.className})
+              </span>
+            )}
+            {roomCode && (
+              <span className="text-xs font-black text-amber-900 bg-amber-100 px-2.5 py-1 rounded-md border border-amber-300 font-mono">
+                Mã Phòng: {roomCode}
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2.5 mt-1.5">
+            <h2 className="text-base sm:text-lg font-bold text-slate-900 truncate">
+              {exam.metadata.examTitle} - MÔN {exam.metadata.subject.toUpperCase()}
+            </h2>
+            {!isSubmitted && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handleReshuffleNewAttempt(true, shufflePart2Items)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 transition-colors cursor-pointer"
+                  title="Trộn câu hỏi trong phạm vi từng phần (Phần I -> Phần II -> Phần III) và trộn đáp án A, B, C, D (giữ cố định đáp án 'Cả A, B, C đều đúng' ở D)"
+                >
+                  <Shuffle className="w-3.5 h-3.5" />
+                  <span>Trộn Đề Theo Từng Phần</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleReshuffleNewAttempt(true, !shufflePart2Items)}
+                  className={`px-2 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer ${
+                    shufflePart2Items
+                      ? 'bg-indigo-50 text-indigo-800 border-indigo-200 hover:bg-indigo-100'
+                      : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'
+                  }`}
+                  title="Tùy chọn giữ nguyên hoặc trộn thứ tự 4 ý a), b), c), d) ở Phần II"
+                >
+                  {shufflePart2Items ? 'Phần II: Đang trộn ý a,b,c,d' : 'Phần II: Giữ nguyên a,b,c,d'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleReshuffleNewAttempt(!isSmartShuffleEnabled, shufflePart2Items)}
+                  className="px-2 py-1 rounded-lg text-[11px] font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
+                >
+                  {isSmartShuffleEnabled ? 'Xem thứ tự gốc' : 'Bật trộn đề'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right Toolbar: Interactive Countdown Timer Widget + Submit Action */}
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Countdown Timer Widget */}
+          <div className="relative">
+            <div
+              className={`rounded-2xl border px-3.5 py-2 transition-all shadow-xs flex items-center gap-3 ${
+                isSubmitted
+                  ? 'bg-slate-100 border-slate-300 text-slate-700'
+                  : isCriticalTime
+                  ? 'bg-rose-950 text-white border-rose-500 ring-2 ring-rose-400/40 animate-pulse'
+                  : isWarningTime
+                  ? 'bg-amber-950 text-white border-amber-500'
+                  : isPaused
+                  ? 'bg-slate-800 text-amber-200 border-amber-400/60'
+                  : 'bg-slate-900 text-white border-slate-800'
+              }`}
+            >
+              <div
+                className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                  isSubmitted
+                    ? 'bg-slate-200 text-slate-600'
+                    : isCriticalTime
+                    ? 'bg-rose-600 text-white'
+                    : isWarningTime
+                    ? 'bg-amber-500 text-slate-950'
+                    : 'bg-white/10 text-emerald-400'
+                }`}
+              >
+                <Timer className="w-5 h-5" />
+              </div>
+
+              <div className="min-w-[145px]">
+                <div className="flex items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-wider opacity-80">
+                  <span>
+                    {isSubmitted
+                      ? 'Đã nộp bài'
+                      : isPaused
+                      ? 'Đang tạm dừng'
+                      : isCriticalTime
+                      ? 'Sắp hết giờ!'
+                      : 'Thời gian còn lại'}
+                  </span>
+                  {!isSubmitted && (
+                    <span className="font-mono">{Math.ceil(timePercentRemaining)}%</span>
+                  )}
+                </div>
+
+                <div className="flex items-baseline gap-1 font-mono font-black text-lg sm:text-xl tracking-tight leading-tight">
+                  {isSubmitted ? (
+                    <span className="text-sm font-bold text-slate-700">
+                      Hoàn thành ({elapsedParts.formatted})
+                    </span>
+                  ) : (
+                    <>
+                      {remainingParts.hrs && (
+                        <>
+                          <span>{remainingParts.hrs}</span>
+                          <span className="text-emerald-400">:</span>
+                        </>
+                      )}
+                      <span>{remainingParts.mins}</span>
+                      <span className={isCriticalTime ? 'text-rose-300' : 'text-emerald-400'}>
+                        :
+                      </span>
+                      <span className={isCriticalTime ? 'text-rose-300' : 'text-amber-300'}>
+                        {remainingParts.secs}
+                      </span>
+                      <span className="text-[10px] font-sans font-normal opacity-75 ml-1.5">
+                        / {Math.round(totalDurationSeconds / 60)}p
+                      </span>
+                    </>
+                  )}
+                </div>
+
+                {!isSubmitted && (
+                  <div className="w-full h-1.5 bg-white/15 rounded-full overflow-hidden mt-1">
+                    <div
+                      className={`h-full transition-all duration-500 ${
+                        isCriticalTime
+                          ? 'bg-rose-500'
+                          : isWarningTime
+                          ? 'bg-amber-400'
+                          : 'bg-emerald-400'
+                      }`}
+                      style={{ width: `${timePercentRemaining}%` }}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {!isSubmitted && !roomId && (
+                <div className="flex items-center gap-1 pl-2 border-l border-white/15">
+                  <button
+                    type="button"
+                    onClick={() => setIsPaused((prev) => !prev)}
+                    className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
+                    title={isPaused ? 'Tiếp tục tính giờ' : 'Tạm dừng đồng hồ'}
+                  >
+                    {isPaused ? (
+                      <Play className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : (
+                      <Pause className="w-3.5 h-3.5 text-amber-300" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowTimerSettings((prev) => !prev)}
+                    className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
+                    title="Tùy chỉnh thời gian luyện tập"
+                  >
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {showTimerSettings && !isSubmitted && (
+              <div className="absolute right-0 mt-2 w-72 bg-white rounded-2xl border border-slate-200 shadow-xl p-4 z-40 space-y-3 text-xs text-slate-700">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                  <span className="font-bold text-slate-900 flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-indigo-600" />
+                    Chi tiết thời gian làm bài
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowTimerSettings(false)}
+                    className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                  <div>
+                    <span className="text-[10px] text-slate-500 block">Đã làm bài</span>
+                    <span className="font-mono font-bold text-slate-900 text-sm">
+                      {elapsedParts.formatted}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 block">Tốc độ trung bình</span>
+                    <span className="font-mono font-bold text-indigo-700 text-sm">
+                      {answeredCount > 0
+                        ? `${Math.round(elapsedSeconds / answeredCount)}s / câu`
+                        : 'Chưa chọn'}
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <span className="text-[11px] font-semibold text-slate-600 block mb-1.5">
+                    Đặt thời gian luyện tập:
+                  </span>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {[15, 30, 45, 50].map((mins) => (
+                      <button
+                        key={mins}
+                        type="button"
+                        onClick={() => handleSelectCustomDuration(mins)}
+                        className={`py-1.5 rounded-lg font-bold border text-center cursor-pointer transition-colors ${
+                          Math.round(totalDurationSeconds / 60) === mins
+                            ? 'bg-indigo-600 text-white border-indigo-600'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        {mins}p
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleResetTimer}
+                  className="w-full py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Đặt lại đồng hồ về đầu</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {!isSubmitted ? (
+            <button
+              type="button"
+              onClick={() => setShowSubmitConfirmModal(true)}
+              disabled={isSubmittingToFirebase}
+              className="px-5 py-2.5 rounded-xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-md shadow-emerald-200 cursor-pointer transition-all"
+            >
+              {isSubmittingToFirebase ? 'Đang gửi bài...' : 'Nộp Bài Thi'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onExitTest}
+              className="px-4 py-2 rounded-xl font-semibold text-xs bg-slate-100 hover:bg-slate-200 text-slate-800 cursor-pointer"
+            >
+              Quay Lại
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Submit Confirmation Modal */}
+      {showSubmitConfirmModal && !isSubmitted && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 space-y-4 animate-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                <FileCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Xác nhận nộp bài thi?</h3>
+                <p className="text-xs text-slate-500">
+                  Thời gian còn lại:{' '}
+                  <strong className="font-mono text-slate-800">{remainingParts.formatted}</strong>
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 text-xs space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-slate-600">Phần I (Trắc nghiệm ABCD):</span>
+                <span className="font-bold text-sky-700">
+                  {answeredP1Count} / {activeExamState.part1.length} câu
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-600">Phần II (Đúng / Sai a,b,c,d):</span>
+                <span className="font-bold text-indigo-700">
+                  {answeredP2Count} / {activeExamState.part2.length} câu
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-600">Phần III (Trả lời ngắn):</span>
+                <span className="font-bold text-emerald-700">
+                  {answeredP3Count} / {activeExamState.part3.length} câu
+                </span>
+              </div>
+              {answeredCount < totalQuestions && (
+                <p className="text-amber-700 font-medium pt-1 border-t border-slate-200/80">
+                  Lưu ý: Bạn vẫn còn {totalQuestions - answeredCount} câu chưa hoàn thành.
+                </p>
+              )}
+            </div>
+
+            {roomId && (
+              <div className="p-3.5 rounded-xl bg-indigo-50/70 border border-indigo-200 space-y-2.5 text-xs">
+                <div className="font-bold text-indigo-950">
+                  Thông tin học sinh nộp bài (Mã phòng: {roomCode}):
+                </div>
+                {submitIdentityError && (
+                  <div className="p-2 rounded-lg bg-rose-100 text-rose-800 font-semibold border border-rose-300">
+                    {submitIdentityError}
+                  </div>
+                )}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Họ và tên học sinh <span className="text-rose-600">*</span>:
+                  </label>
+                  <input
+                    type="text"
+                    value={localStudentName}
+                    onChange={(e) => {
+                      setLocalStudentName(e.target.value);
+                      setSubmitIdentityError(null);
+                    }}
+                    placeholder="Nhập Họ và tên (VD: Nguyễn Văn A)"
+                    className="w-full border border-indigo-300 rounded-lg px-2.5 py-1.5 font-semibold bg-white text-slate-900"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">Lớp:</label>
+                    <input
+                      type="text"
+                      value={localStudentClass}
+                      onChange={(e) => setLocalStudentClass(e.target.value)}
+                      placeholder="12A1"
+                      className="w-full border border-indigo-300 rounded-lg px-2.5 py-1.5 font-semibold bg-white text-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">SBD:</label>
+                    <input
+                      type="text"
+                      value={localStudentSbd}
+                      onChange={(e) => setLocalStudentSbd(e.target.value)}
+                      placeholder="012"
+                      className="w-full border border-indigo-300 rounded-lg px-2.5 py-1.5 font-semibold bg-white text-slate-900"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowSubmitConfirmModal(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
+              >
+                Làm tiếp
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDoSubmit(false)}
+                className="px-5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm cursor-pointer"
+              >
+                Xác nhận Nộp bài
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Student Identity Bar when taking an online room exam (e.g. opened via /?room=3203) */}
+      {roomId && !isSubmitted && (
+        <div className="bg-gradient-to-r from-indigo-50 via-sky-50 to-emerald-50 p-4 rounded-2xl border border-indigo-200 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <span className="text-xs font-black text-indigo-950 uppercase tracking-wide block">
+              THÔNG TIN HỌC SINH DỰ THI (PHÒNG THI MÃ: {roomCode})
+            </span>
+            <span className="text-[11px] text-slate-600">
+              Nhập Họ tên và Lớp của bạn để hệ thống lưu điểm trực tiếp vào bảng điểm của giáo viên khi nộp bài.
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 flex-1 max-w-2xl">
+            <input
+              type="text"
+              value={localStudentName}
+              onChange={(e) => {
+                setLocalStudentName(e.target.value);
+                setSubmitIdentityError(null);
+              }}
+              placeholder="Họ và tên học sinh *"
+              className="border-2 border-indigo-300 focus:border-indigo-600 rounded-xl px-3 py-2 text-xs font-bold bg-white text-slate-900"
+            />
+            <input
+              type="text"
+              value={localStudentClass}
+              onChange={(e) => setLocalStudentClass(e.target.value)}
+              placeholder="Lớp (VD: 12A1) *"
+              className="border border-slate-300 focus:border-indigo-600 rounded-xl px-3 py-2 text-xs font-semibold bg-white text-slate-900"
+            />
+            <input
+              type="text"
+              value={localStudentSbd}
+              onChange={(e) => setLocalStudentSbd(e.target.value)}
+              placeholder="Số báo danh (SBD)"
+              className="border border-slate-300 focus:border-indigo-600 rounded-xl px-3 py-2 text-xs font-semibold bg-white text-slate-900"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* RESULTS BANNER (IF SUBMITTED) */}
+      {isSubmitted && results && (
+        <div className="bg-gradient-to-br from-indigo-900 via-indigo-800 to-sky-900 text-white p-6 sm:p-8 rounded-2xl shadow-xl">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+            <div className="space-y-2 text-center md:text-left">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
+                  <CheckCircle2 className="w-4 h-4" /> Đã chấm điểm tự động theo thang điểm 10,0 chuẩn Bộ GD&ĐT (Thời gian: {elapsedParts.formatted})
+                </div>
+                {roomId && (
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-sky-500/20 text-sky-200 border border-sky-400/30">
+                    <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse"></span>
+                    <span>Đã lưu kết quả lên Firebase Phòng {roomCode || ''}</span>
+                  </div>
+                )}
+              </div>
+              <h3 className="text-2xl font-black tracking-tight">
+                KẾT QUẢ CHẤM ĐIỂM TỰ ĐỘNG CẤU TRÚC 3 PHẦN
+              </h3>
+              {studentInfo && (
+                <p className="text-xs text-amber-200 font-semibold">
+                  Thí sinh: {studentInfo.name} • Lớp: {studentInfo.className} • SBD: {studentInfo.sbd}
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center gap-4 bg-white/10 backdrop-blur-md px-6 py-4 rounded-2xl border border-white/20">
+              <Award className="w-12 h-12 text-amber-300" />
+              <div>
+                <span className="text-xs font-medium text-indigo-200 block">TỔNG ĐIỂM ĐẠT ĐƯỢC</span>
+                <span className="text-4xl font-black text-amber-300 leading-none">
+                  {results.totalScore.toFixed(2)}
+                </span>
+                <span className="text-sm text-indigo-200 ml-1">/ 10,0</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Breakdown cards per official 3-part grading scale */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-6">
+            <div className="bg-white/10 rounded-xl p-3.5 border border-white/10">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-sky-200 font-semibold">
+                  Phần I: Trắc nghiệm ABCD
+                </span>
+                <span className="text-[11px] bg-sky-500/30 text-sky-100 px-2 py-0.5 rounded">
+                  Đúng {results.correctCountP1}/{activeExamState.part1.length} câu
+                </span>
+              </div>
+              <div className="text-xl font-black text-white mt-1">
+                {results.scoreP1.toFixed(2)} <span className="text-xs font-normal text-sky-200">/ {(activeExamState.part1.length * 0.25).toFixed(2)} điểm (0,25đ/câu)</span>
+              </div>
+            </div>
+
+            <div className="bg-white/10 rounded-xl p-3.5 border border-white/10">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-indigo-200 font-semibold">
+                  Phần II: Đúng / Sai (a, b, c, d)
+                </span>
+                <span className="text-[11px] bg-indigo-500/30 text-indigo-100 px-2 py-0.5 rounded">
+                  0,1 • 0,25 • 0,5 • 1,0đ
+                </span>
+              </div>
+              <div className="text-xl font-black text-white mt-1">
+                {results.scoreP2.toFixed(2)} <span className="text-xs font-normal text-indigo-200">/ {(activeExamState.part2.length * 1.0).toFixed(2)} điểm (tối đa 1,0đ/câu)</span>
+              </div>
+            </div>
+
+            <div className="bg-white/10 rounded-xl p-3.5 border border-white/10">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-emerald-200 font-semibold">
+                  Phần III: Trả lời ngắn
+                </span>
+                <span className="text-[11px] bg-emerald-500/30 text-emerald-100 px-2 py-0.5 rounded">
+                  Đúng {results.correctCountP3}/{activeExamState.part3.length} câu
+                </span>
+              </div>
+              <div className="text-xl font-black text-white mt-1">
+                {results.scoreP3.toFixed(2)} <span className="text-xs font-normal text-emerald-200">/ {(activeExamState.part3.length * 0.25).toFixed(2)} điểm (0,25đ/câu)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MAIN LAYOUT: Questions on left (8 cols), Question Palette on right (4 cols) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* QUESTIONS COLUMN */}
+        <div className="lg:col-span-8 space-y-8">
+          {/* =================================================================
+              PHẦN I: CÂU TRẮC NGHIỆM NHIỀU PHƯƠNG ÁN LỰA CHỌN (4 RADIO A, B, C, D)
+              ================================================================= */}
+          {activeExamState.part1.length > 0 && (
+            <div className="space-y-4">
+              <div className="bg-sky-50 border border-sky-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="font-bold text-sky-900 text-sm">
+                    PHẦN I. Câu trắc nghiệm nhiều phương án lựa chọn (Từ câu 1 đến câu {activeExamState.part1.length})
+                  </h3>
+                  <p className="text-xs text-sky-700">
+                    Mỗi câu hỏi có 4 phương án A, B, C, D. Học sinh chỉ chọn 1 phương án đúng.
+                  </p>
+                </div>
+                <span className="text-xs font-bold bg-white text-sky-800 px-2.5 py-1 rounded-md border border-sky-200">
+                  0,25 điểm / câu (Tổng {(activeExamState.part1.length * 0.25).toFixed(2).replace('.', ',')}đ)
+                </span>
+              </div>
+
+              {activeExamState.part1.map((q, idx) => {
+                const studentChoice = part1Answers[q.id];
+                const isCorrect = studentChoice === q.correctAnswer;
+                const hasFixedDOption = isFixedAtDOptionText(q.options.D);
+
+                return (
+                  <div
+                    key={q.id}
+                    id={`q-p1-${q.id}`}
+                    className={`bg-white rounded-xl border p-5 transition-all shadow-2xs ${
+                      isSubmitted
+                        ? isCorrect
+                          ? 'border-emerald-300 bg-emerald-50/20'
+                          : studentChoice
+                          ? 'border-rose-300 bg-rose-50/20'
+                          : 'border-amber-300'
+                        : 'border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3 mb-3">
+                      <div className="flex items-start gap-3">
+                        <span className="px-2.5 py-1 rounded-lg bg-sky-100 text-sky-800 font-bold text-xs shrink-0 mt-0.5">
+                          Câu {idx + 1}
+                        </span>
+                        <div className="flex-1 text-sm text-slate-900 font-medium leading-relaxed">
+                          <MathChemView content={q.content} />
+                        </div>
+                      </div>
+                      {hasFixedDOption && !isSubmitted && (
+                        <span className="shrink-0 text-[10px] font-semibold bg-purple-50 text-purple-700 border border-purple-200 px-2 py-0.5 rounded">
+                          Cố định phương án D
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Attached Experiment / Structure Image */}
+                    {q.imageUrl && (
+                      <div className="my-3 text-center pl-4 sm:pl-12 pr-2">
+                        <img
+                          src={q.imageUrl}
+                          alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
+                          className="max-h-56 mx-auto object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-2xs"
+                        />
+                        {q.imageCaption && (
+                          <p className="text-xs italic text-slate-600 mt-1.5 font-serif">
+                            {q.imageCaption}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* 4 Radio Buttons (A, B, C, D) */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pl-0 sm:pl-12">
+                      {(['A', 'B', 'C', 'D'] as const).map((opt) => {
+                        const isChosen = studentChoice === opt;
+                        const isThisKey = q.correctAnswer === opt;
+
+                        let labelStyle =
+                          'bg-white border-slate-200 text-slate-800 hover:bg-slate-50';
+                        if (isSubmitted) {
+                          if (isThisKey) {
+                            labelStyle =
+                              'bg-emerald-100 border-emerald-400 text-emerald-950 font-bold ring-2 ring-emerald-400';
+                          } else if (isChosen && !isThisKey) {
+                            labelStyle =
+                              'bg-rose-100 border-rose-400 text-rose-950 font-bold';
+                          }
+                        } else if (isChosen) {
+                          labelStyle =
+                            'bg-sky-50 border-sky-500 text-sky-950 font-bold ring-2 ring-sky-400';
+                        }
+
+                        return (
+                          <label
+                            key={opt}
+                            className={`flex items-start gap-2.5 p-3 rounded-xl border text-left text-xs sm:text-sm transition-all ${
+                              isSubmitted ? 'cursor-default' : 'cursor-pointer'
+                            } ${labelStyle}`}
+                          >
+                            <input
+                              type="radio"
+                              name={`part1_q_${q.id}`}
+                              value={opt}
+                              checked={isChosen}
+                              disabled={isSubmitted}
+                              onChange={() => {
+                                if (!isSubmitted) {
+                                  setPart1Answers((prev) => ({ ...prev, [q.id]: opt }));
+                                }
+                              }}
+                              className="mt-1 w-4 h-4 text-sky-600 border-slate-300 focus:ring-sky-500 shrink-0 accent-sky-600"
+                            />
+                            <span className="font-bold text-sky-800 shrink-0 mt-0.5">
+                              {opt}.
+                            </span>
+                            <div className="flex-1">
+                              <MathChemView content={q.options[opt]} />
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+
+                    {isSubmitted && (
+                      <div className="mt-4 sm:ml-12 p-3 bg-amber-50 rounded-lg border border-amber-200/80 text-xs">
+                        <span className="font-bold text-amber-900 block mb-1">
+                          {isCorrect ? '✓ Chính xác (+0,25 điểm)' : `✗ Sai (0 điểm)`} • Đáp án đúng: {q.correctAnswer}
+                        </span>
+                        {q.explanation && (
+                          <MathChemView content={q.explanation} className="text-slate-700" />
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* =================================================================
+              PHẦN II: CÂU TRẮC NGHIỆM ĐÚNG SAI (4 DÒNG a, b, c, d VỚI [Đúng] / [Sai])
+              ================================================================= */}
+          {activeExamState.part2.length > 0 && (
+            <div className="space-y-4">
+              <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="font-bold text-indigo-900 text-sm">
+                    PHẦN II. Câu trắc nghiệm đúng sai (Từ câu 1 đến câu {activeExamState.part2.length})
+                  </h3>
+                  <p className="text-xs text-indigo-700">
+                    Mỗi câu hỏi có 4 ý a), b), c), d). Học sinh chọn <strong>[Đúng]</strong> hoặc <strong>[Sai]</strong> cho từng ý (Đúng 1 ý: 0,1đ • 2 ý: 0,25đ • 3 ý: 0,5đ • 4 ý: 1,0đ).
+                  </p>
+                </div>
+                <span className="text-xs font-bold bg-white text-indigo-800 px-2.5 py-1 rounded-md border border-indigo-200">
+                  Tối đa 1,0 điểm / câu (Tổng {(activeExamState.part2.length * 1.0).toFixed(1).replace('.', ',')}đ)
+                </span>
+              </div>
+
+              {activeExamState.part2.map((q, idx) => {
+                const qScoreInfo = results?.part2QuestionScores[q.id];
+
+                return (
+                  <div
+                    key={q.id}
+                    id={`q-p2-${q.id}`}
+                    className="bg-white rounded-xl border border-slate-200 shadow-2xs p-5 space-y-4"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-3">
+                        <span className="px-2.5 py-1 rounded-lg bg-indigo-100 text-indigo-800 font-bold text-xs shrink-0 mt-0.5">
+                          Câu {idx + 1}
+                        </span>
+                        <div className="flex-1 text-sm text-slate-900 font-medium leading-relaxed">
+                          <MathChemView content={q.content} />
+                        </div>
+                      </div>
+                      {isSubmitted && qScoreInfo && (
+                        <span className="shrink-0 px-2.5 py-1 rounded-lg bg-indigo-100 text-indigo-900 font-bold text-xs">
+                          Đúng {qScoreInfo.correctSubCount}/4 ý (+{qScoreInfo.points.toString().replace('.', ',')}đ)
+                        </span>
+                      )}
+                    </div>
+
+                    {q.imageUrl && (
+                      <div className="my-3 text-center pl-4 sm:pl-12 pr-2">
+                        <img
+                          src={q.imageUrl}
+                          alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
+                          className="max-h-56 mx-auto object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-2xs"
+                        />
+                        {q.imageCaption && (
+                          <p className="text-xs italic text-slate-600 mt-1.5 font-serif">
+                            {q.imageCaption}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Structured 4-Row Table for a), b), c), d) with [Đúng] and [Sai] buttons */}
+                    <div className="sm:ml-12 overflow-hidden rounded-xl border border-slate-200">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-slate-100 border-b border-slate-200 text-[11px] font-bold text-slate-700 uppercase">
+                            <th className="py-2 px-3 w-12 text-center">Ý</th>
+                            <th className="py-2 px-3">Nội dung mệnh đề</th>
+                            <th className="py-2 px-3 w-44 text-center">Lựa chọn Đúng / Sai</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200 text-xs sm:text-sm">
+                          {q.items.map((item) => {
+                            const studentVal = part2Answers[q.id]?.[item.label];
+                            const isSubCorrect = studentVal === item.isCorrect;
+
+                            return (
+                              <tr
+                                key={item.label}
+                                className={
+                                  isSubmitted
+                                    ? isSubCorrect
+                                      ? 'bg-emerald-50/40'
+                                      : 'bg-rose-50/40'
+                                    : 'hover:bg-slate-50/80'
+                                }
+                              >
+                                <td className="py-3 px-3 font-bold text-indigo-900 text-center align-top">
+                                  {item.label})
+                                </td>
+                                <td className="py-3 px-3 text-slate-800 align-top">
+                                  <MathChemView content={item.text} />
+                                  {isSubmitted && (
+                                    <div className="mt-1">
+                                      <span
+                                        className={`inline-block text-[11px] font-bold px-2 py-0.5 rounded ${
+                                          isSubCorrect
+                                            ? 'bg-emerald-100 text-emerald-800'
+                                            : 'bg-rose-100 text-rose-800'
+                                        }`}
+                                      >
+                                        {isSubCorrect ? '✓ Chọn đúng' : '✗ Chọn sai'} (Đáp án chuẩn:{' '}
+                                        {item.isCorrect ? 'Đúng' : 'Sai'})
+                                      </span>
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="py-3 px-3 align-middle">
+                                  <div className="flex items-center justify-center gap-2">
+                                    <button
+                                      type="button"
+                                      disabled={isSubmitted}
+                                      onClick={() => {
+                                        const currentQ = part2Answers[q.id] || {
+                                          a: null,
+                                          b: null,
+                                          c: null,
+                                          d: null,
+                                        };
+                                        setPart2Answers({
+                                          ...part2Answers,
+                                          [q.id]: { ...currentQ, [item.label]: true },
+                                        });
+                                      }}
+                                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
+                                        studentVal === true
+                                          ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs ring-2 ring-emerald-300'
+                                          : 'bg-white text-slate-700 border-slate-300 hover:bg-emerald-50'
+                                      }`}
+                                    >
+                                      [Đúng]
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      disabled={isSubmitted}
+                                      onClick={() => {
+                                        const currentQ = part2Answers[q.id] || {
+                                          a: null,
+                                          b: null,
+                                          c: null,
+                                          d: null,
+                                        };
+                                        setPart2Answers({
+                                          ...part2Answers,
+                                          [q.id]: { ...currentQ, [item.label]: false },
+                                        });
+                                      }}
+                                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
+                                        studentVal === false
+                                          ? 'bg-rose-600 text-white border-rose-700 shadow-xs ring-2 ring-rose-300'
+                                          : 'bg-white text-slate-700 border-slate-300 hover:bg-rose-50'
+                                      }`}
+                                    >
+                                      [Sai]
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* =================================================================
+              PHẦN III: CÂU TRẮC NGHIỆM YÊU CẦU TRẢ LỜI NGẮN (Ô NHẬP TỐI ĐA 4 KÝ TỰ)
+              ================================================================= */}
+          {activeExamState.part3.length > 0 && (
+            <div className="space-y-4">
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="font-bold text-emerald-900 text-sm">
+                    PHẦN III. Câu trắc nghiệm yêu cầu trả lời ngắn (Từ câu 1 đến câu {activeExamState.part3.length})
+                  </h3>
+                  <p className="text-xs text-emerald-700">
+                    Học sinh điền kết quả là số (số nguyên hoặc số thập phân, hỗ trợ dấu âm <code className="font-bold">-</code>, dấu phẩy <code className="font-bold">,</code> và dấu chấm <code className="font-bold">.</code>, tối đa 4 ký tự). Quy đổi <code className="font-bold">2,5</code> và <code className="font-bold">2.5</code> như nhau.
+                  </p>
+                </div>
+                <span className="text-xs font-bold bg-white text-emerald-800 px-2.5 py-1 rounded-md border border-emerald-200">
+                  0,25 điểm / câu (Tổng {(activeExamState.part3.length * 0.25).toFixed(2).replace('.', ',')}đ)
+                </span>
+              </div>
+
+              {activeExamState.part3.map((q, idx) => {
+                const rawVal = part3Answers[q.id] || '';
+                const isCorrect = isShortAnswerMatch(rawVal, q.correctAnswer);
+                const charBoxes = [0, 1, 2, 3].map((i) => rawVal[i] || '');
+
+                return (
+                  <div
+                    key={q.id}
+                    id={`q-p3-${q.id}`}
+                    className={`bg-white rounded-xl border p-5 space-y-3 shadow-2xs ${
+                      isSubmitted
+                        ? isCorrect
+                          ? 'border-emerald-300 bg-emerald-50/20'
+                          : rawVal
+                          ? 'border-rose-300 bg-rose-50/20'
+                          : 'border-amber-300'
+                        : 'border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <span className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 font-bold text-xs shrink-0 mt-0.5">
+                        Câu {idx + 1}
+                      </span>
+                      <div className="flex-1 text-sm text-slate-900 font-medium leading-relaxed">
+                        <MathChemView content={q.content} />
+                      </div>
+                    </div>
+
+                    {q.imageUrl && (
+                      <div className="my-3 text-center pl-4 sm:pl-12 pr-2">
+                        <img
+                          src={q.imageUrl}
+                          alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
+                          className="max-h-56 mx-auto object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-2xs"
+                        />
+                        {q.imageCaption && (
+                          <p className="text-xs italic text-slate-600 mt-1.5 font-serif">
+                            {q.imageCaption}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="sm:pl-12 flex flex-wrap items-center gap-4">
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs font-bold text-slate-700">
+                          Điền đáp số (tối đa 4 ký tự):
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          maxLength={4}
+                          disabled={isSubmitted}
+                          value={rawVal}
+                          onChange={(e) => handlePart3InputChange(q.id, e.target.value)}
+                          placeholder="VD: 2,5"
+                          className="w-28 text-sm font-mono font-bold text-center text-slate-900 border-2 border-emerald-400 rounded-xl px-3 py-1.5 focus:ring-2 focus:ring-emerald-500 bg-white"
+                        />
+                        {q.unit && <span className="text-xs text-slate-500">({q.unit})</span>}
+                      </div>
+
+                      {/* 4-character Answer Sheet Box Visualization */}
+                      <div className="flex items-center gap-1" title="4 ô ký tự trên phiếu trả lời trắc nghiệm">
+                        <span className="text-[11px] text-slate-500 mr-1">Ô phiếu:</span>
+                        {charBoxes.map((ch, boxIdx) => (
+                          <span
+                            key={boxIdx}
+                            className={`w-7 h-8 rounded-md border font-mono font-bold text-xs flex items-center justify-center ${
+                              ch
+                                ? 'bg-emerald-50 border-emerald-400 text-emerald-900'
+                                : 'bg-slate-50 border-slate-200 text-slate-400'
+                            }`}
+                          >
+                            {ch || '·'}
+                          </span>
+                        ))}
+                      </div>
+
+                      {isSubmitted && (
+                        <div
+                          className={`text-xs font-bold px-3 py-1.5 rounded-lg ${
+                            isCorrect
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-rose-100 text-rose-800'
+                          }`}
+                        >
+                          {isCorrect
+                            ? '✓ Chính xác! (+0,25 điểm)'
+                            : `✗ Sai • Đáp số đúng: ${q.correctAnswer} (chấp nhận cả ${q.correctAnswer.replace(',', '.')} và ${q.correctAnswer.replace('.', ',')})`}
+                        </div>
+                      )}
+                    </div>
+
+                    {isSubmitted && q.explanation && (
+                      <div className="mt-3 sm:ml-12 p-3 bg-amber-50 rounded-lg border border-amber-200/80 text-xs">
+                        <span className="font-bold text-amber-900 block mb-1">
+                          Hướng dẫn giải chi tiết:
+                        </span>
+                        <MathChemView content={q.explanation} className="text-slate-700" />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* =================================================================
+            QUESTION PALETTE SIDEBAR (CHIA RÕ 3 KHU VỰC: PHẦN I, PHẦN II, PHẦN III)
+            ================================================================= */}
+        <div className="lg:col-span-4">
+          <div className="sticky top-40 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-5">
+            <div>
+              <div className="flex items-center justify-between text-xs font-bold text-slate-800 mb-1.5">
+                <span>BẢNG DANH SÁCH CÂU HỎI (QUESTION PALETTE)</span>
+                <span className="text-indigo-600">
+                  {answeredCount} / {totalQuestions} câu
+                </span>
+              </div>
+              <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-sky-500 via-indigo-600 to-emerald-500 h-full transition-all duration-300"
+                  style={{
+                    width: `${totalQuestions > 0 ? (answeredCount / totalQuestions) * 100 : 0}%`,
+                  }}
+                />
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-slate-500 mt-1.5">
+                <span>Tổng thang điểm: <strong>10,0 điểm</strong></span>
+                <span>4,5đ + 4,0đ + 1,5đ</span>
+              </div>
+            </div>
+
+            {/* KHU VỰC 1: PHẦN I (1 - 18) */}
+            {activeExamState.part1.length > 0 && (
+              <div className="p-3 rounded-xl bg-sky-50/50 border border-sky-100 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-sky-900 uppercase">
+                    Phần I (1–{activeExamState.part1.length})
+                  </span>
+                  <span className="text-[11px] font-semibold text-sky-700">
+                    {answeredP1Count}/{activeExamState.part1.length} câu • {(activeExamState.part1.length * 0.25).toFixed(2).replace('.', ',')}đ
+                  </span>
+                </div>
+                <div className="grid grid-cols-6 gap-1.5 text-xs">
+                  {activeExamState.part1.map((q, idx) => {
+                    const ans = part1Answers[q.id];
+                    const isRight = isSubmitted && ans === q.correctAnswer;
+                    const isWrong = isSubmitted && ans !== q.correctAnswer;
+
+                    return (
+                      <a
+                        key={q.id}
+                        href={`#q-p1-${q.id}`}
+                        className={`h-8 rounded-lg flex items-center justify-center font-bold transition-all border text-[11px] ${
+                          isSubmitted
+                            ? isRight
+                              ? 'bg-emerald-600 text-white border-emerald-600'
+                              : isWrong
+                              ? 'bg-rose-600 text-white border-rose-600'
+                              : 'bg-amber-100 text-amber-900 border-amber-300'
+                            : ans
+                            ? 'bg-sky-600 text-white border-sky-600 shadow-2xs'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-sky-100'
+                        }`}
+                      >
+                        {idx + 1}
+                        {ans && <span className="ml-0.5 text-[10px]">.{ans}</span>}
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* KHU VỰC 2: PHẦN II (1 - 4) */}
+            {activeExamState.part2.length > 0 && (
+              <div className="p-3 rounded-xl bg-indigo-50/50 border border-indigo-100 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-indigo-900 uppercase">
+                    Phần II (1–{activeExamState.part2.length})
+                  </span>
+                  <span className="text-[11px] font-semibold text-indigo-700">
+                    {answeredP2Count}/{activeExamState.part2.length} câu • {(activeExamState.part2.length * 1.0).toFixed(1).replace('.', ',')}đ
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  {activeExamState.part2.map((q, idx) => {
+                    const qAns = part2Answers[q.id] || { a: null, b: null, c: null, d: null };
+                    const subCount = Object.values(qAns).filter(
+                      (v) => v !== null && v !== undefined
+                    ).length;
+
+                    return (
+                      <a
+                        key={q.id}
+                        href={`#q-p2-${q.id}`}
+                        className={`p-2 rounded-lg flex items-center justify-between font-bold transition-all border ${
+                          subCount === 4
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                            : subCount > 0
+                            ? 'bg-indigo-100 text-indigo-900 border-indigo-300'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-indigo-100'
+                        }`}
+                      >
+                        <span>Câu {idx + 1}</span>
+                        <span className="text-[10px] font-mono opacity-90">
+                          {subCount}/4 ý
+                        </span>
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* KHU VỰC 3: PHẦN III (1 - 6) */}
+            {activeExamState.part3.length > 0 && (
+              <div className="p-3 rounded-xl bg-emerald-50/50 border border-emerald-100 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-emerald-900 uppercase">
+                    Phần III (1–{activeExamState.part3.length})
+                  </span>
+                  <span className="text-[11px] font-semibold text-emerald-700">
+                    {answeredP3Count}/{activeExamState.part3.length} câu • {(activeExamState.part3.length * 0.25).toFixed(2).replace('.', ',')}đ
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-1.5 text-xs">
+                  {activeExamState.part3.map((q, idx) => {
+                    const val = part3Answers[q.id]?.trim() || '';
+                    const hasVal = Boolean(val);
+                    const isRight = isSubmitted && isShortAnswerMatch(val, q.correctAnswer);
+
+                    return (
+                      <a
+                        key={q.id}
+                        href={`#q-p3-${q.id}`}
+                        className={`h-8 px-1.5 rounded-lg flex items-center justify-between font-bold transition-all border text-[11px] ${
+                          isSubmitted
+                            ? isRight
+                              ? 'bg-emerald-600 text-white border-emerald-600'
+                              : 'bg-rose-600 text-white border-rose-600'
+                            : hasVal
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-emerald-100'
+                        }`}
+                      >
+                        <span>C{idx + 1}</span>
+                        <span className="font-mono text-[10px] truncate max-w-[36px]">
+                          {hasVal ? val : '—'}
+                        </span>
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {!isSubmitted && (
+              <button
+                type="button"
+                onClick={() => setShowSubmitConfirmModal(true)}
+                disabled={isSubmittingToFirebase}
+                className="w-full py-2.5 rounded-xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-200 hover:from-emerald-700 hover:to-teal-700 transition-all cursor-pointer"
+              >
+                {isSubmittingToFirebase ? 'Đang gửi bài lên Firebase...' : 'Nộp Bài & Chấm Điểm Ngay'}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};

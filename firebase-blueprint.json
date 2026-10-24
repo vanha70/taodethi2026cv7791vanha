@@ -1,0 +1,184 @@
+{
+  "entities": {
+    "ExamRoom": {
+      "title": "ExamRoom",
+      "description": "An online exam room created by a teacher for students to take tests online",
+      "type": "object",
+      "properties": {
+        "roomCode": {
+          "type": "string",
+          "description": "A unique 6-character code for students to enter the room",
+          "minLength": 4,
+          "maxLength": 10
+        },
+        "title": {
+          "type": "string",
+          "description": "Title of the examination",
+          "maxLength": 200
+        },
+        "subject": {
+          "type": "string",
+          "description": "Subject name, e.g. Hóa học",
+          "maxLength": 100
+        },
+        "grade": {
+          "type": "string",
+          "description": "Grade or target class level, e.g. Khối 12, 12A1",
+          "maxLength": 50
+        },
+        "targetClass": {
+          "type": "string",
+          "description": "Target grade or specific class assigned, e.g. Khối 12, 10A1, 11A2, 12A1",
+          "maxLength": 50
+        },
+        "examCode": {
+          "type": "string",
+          "description": "4-digit exam code, e.g. 1003",
+          "minLength": 4,
+          "maxLength": 10
+        },
+        "durationMinutes": {
+          "type": "number",
+          "description": "Duration in minutes"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "closed"],
+          "description": "Room status whether it is currently accepting submissions"
+        },
+        "teacherName": {
+          "type": "string",
+          "description": "Name or contact of the teacher",
+          "maxLength": 150
+        },
+        "allowReview": {
+          "type": "boolean",
+          "description": "Whether students can review correct answers immediately after submission"
+        },
+        "examData": {
+          "type": "object",
+          "description": "The full exam data structure including questions and parts"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp in ISO format"
+        }
+      },
+      "required": ["roomCode", "title", "subject", "durationMinutes", "status", "createdAt"]
+    },
+    "StudentSubmission": {
+      "title": "StudentSubmission",
+      "description": "An online test submission from a student taking the exam in a room",
+      "type": "object",
+      "properties": {
+        "roomCode": {
+          "type": "string",
+          "description": "Code of the exam room",
+          "maxLength": 10
+        },
+        "studentName": {
+          "type": "string",
+          "description": "Full name of the student",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "studentClass": {
+          "type": "string",
+          "description": "Class or grade section, e.g. 12A1",
+          "maxLength": 50
+        },
+        "studentId": {
+          "type": "string",
+          "description": "Student ID or exam seat number (SBD)",
+          "maxLength": 50
+        },
+        "scoreTotal": {
+          "type": "number",
+          "description": "Final score out of 10.0"
+        },
+        "scorePart1": {
+          "type": "number",
+          "description": "Score achieved in Part 1"
+        },
+        "scorePart2": {
+          "type": "number",
+          "description": "Score achieved in Part 2"
+        },
+        "scorePart3": {
+          "type": "number",
+          "description": "Score achieved in Part 3"
+        },
+        "answersPart1": {
+          "type": "object",
+          "description": "Student answers for Part 1"
+        },
+        "answersPart2": {
+          "type": "object",
+          "description": "Student answers for Part 2"
+        },
+        "answersPart3": {
+          "type": "object",
+          "description": "Student answers for Part 3"
+        },
+        "timeSpentSeconds": {
+          "type": "number",
+          "description": "Time spent in seconds"
+        },
+        "submittedAt": {
+          "type": "string",
+          "description": "Submission timestamp"
+        }
+      },
+      "required": ["roomCode", "studentName", "scoreTotal", "submittedAt"]
+    },
+    "AppSettings": {
+      "title": "AppSettings",
+      "description": "Global application settings such as Public App URL for student exam links",
+      "type": "object",
+      "properties": {
+        "publicAppUrl": {
+          "type": "string",
+          "description": "Public domain URL used for generating student exam links and QR codes",
+          "maxLength": 500
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last updated timestamp in ISO format"
+        }
+      },
+      "required": ["publicAppUrl"]
+    }
+  },
+  "firestore": {
+    "/exams/{examId}": {
+      "schema": {
+        "$ref": "#/entities/ExamRoom"
+      },
+      "description": "Published online exams indexed by 4-digit Room/Exam Code"
+    },
+    "/exams/{examId}/submissions/{submissionId}": {
+      "schema": {
+        "$ref": "#/entities/StudentSubmission"
+      },
+      "description": "Student submissions and test results for a published exam"
+    },
+    "/rooms/{roomId}": {
+      "schema": {
+        "$ref": "#/entities/ExamRoom"
+      },
+      "description": "Online exam rooms created by teachers"
+    },
+    "/rooms/{roomId}/submissions/{submissionId}": {
+      "schema": {
+        "$ref": "#/entities/StudentSubmission"
+      },
+      "description": "Student submissions and test results for a specific room"
+    },
+    "/settings/{settingId}": {
+      "schema": {
+        "$ref": "#/entities/AppSettings"
+      },
+      "description": "Application settings including Public App URL for student links"
+    }
+  }
+}

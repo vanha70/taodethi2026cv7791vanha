@@ -1,0 +1,8 @@
+{
+  "name": "Tạo Đề Thi 2026 - Chuẩn CV 7991 & GDPT 2018",
+  "description": "Phần mềm tạo đề thi, ma trận, bản đặc tả và trộn đề thi trắc nghiệm theo chuẩn Công văn 7991/BGDĐT-GDTrH và cấu trúc định dạng đề thi mới 2025 - 2026 của Bộ GD&ĐT.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
