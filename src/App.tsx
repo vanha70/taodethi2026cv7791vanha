@@ -30,14 +30,15 @@ import {
   extractRoomCodeFromLocation,
   findRoomByCode,
 } from './services/roomService';
+import { safeLocalStorage } from './utils/browserSafeguards';
 
 const STORAGE_KEY = 'taodethi2026_exam_state';
 
 export default function App() {
-  // Load saved state or default to chemistry 12 exam
+  // Load saved state or default to chemistry 12 exam (safely wrapped for Zalo/iOS Safari WebViews)
   const [exam, setExam] = useState<ExamData>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
+      const saved = safeLocalStorage.getItem(STORAGE_KEY);
       if (saved) {
         return JSON.parse(saved);
       }
@@ -74,11 +75,11 @@ export default function App() {
   });
   const [isSaving, setIsSaving] = useState<boolean>(false);
 
-  // Auto save to localStorage with immediate visual feedback
+  // Auto save to safeLocalStorage with immediate visual feedback
   useEffect(() => {
     setIsSaving(true);
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(exam));
+      safeLocalStorage.setItem(STORAGE_KEY, JSON.stringify(exam));
       const now = new Date();
       setLastSavedTime(
         `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`
@@ -165,7 +166,7 @@ export default function App() {
       if (isCtrlOrCmd && !e.shiftKey && (e.key === 's' || e.key === 'S')) {
         e.preventDefault();
         try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(exam));
+          safeLocalStorage.setItem(STORAGE_KEY, JSON.stringify(exam));
           const now = new Date();
           setLastSavedTime(
             `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`
@@ -306,7 +307,7 @@ export default function App() {
   const totalQuestions = exam.part1.length + exam.part2.length + exam.part3.length + exam.essay.length;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
+    <div className="min-h-[100dvh] bg-slate-50 text-slate-900 flex flex-col font-sans overflow-x-clip">
       {/* Toast Notification */}
       {notification && (
         <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-xl border border-slate-700 text-xs sm:text-sm font-medium flex items-center gap-2 animate-bounce">

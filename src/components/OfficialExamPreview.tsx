@@ -99,11 +99,11 @@ export const OfficialExamPreview: React.FC<OfficialExamPreviewProps> = ({
 
                   {/* Chemistry Diagram / Image */}
                   {q.imageUrl && (
-                    <div className="my-2 text-center">
+                    <div className="exam-diagram-wrapper my-2 text-center max-w-full overflow-x-auto">
                       <img
                         src={q.imageUrl}
                         alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
-                        className="max-h-52 mx-auto object-contain rounded border border-slate-200"
+                        className="exam-diagram-img max-w-full h-auto max-h-52 mx-auto object-contain rounded border border-slate-200"
                       />
                       {q.imageCaption && (
                         <p className="text-xs italic text-slate-700 mt-1 font-serif">
@@ -159,11 +159,11 @@ export const OfficialExamPreview: React.FC<OfficialExamPreviewProps> = ({
 
                   {/* Chemistry Diagram / Image */}
                   {q.imageUrl && (
-                    <div className="my-2 text-center">
+                    <div className="exam-diagram-wrapper my-2 text-center max-w-full overflow-x-auto">
                       <img
                         src={q.imageUrl}
                         alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
-                        className="max-h-52 mx-auto object-contain rounded border border-slate-200"
+                        className="exam-diagram-img max-w-full h-auto max-h-52 mx-auto object-contain rounded border border-slate-200"
                       />
                       {q.imageCaption && (
                         <p className="text-xs italic text-slate-700 mt-1 font-serif">
@@ -209,11 +209,11 @@ export const OfficialExamPreview: React.FC<OfficialExamPreviewProps> = ({
 
                   {/* Chemistry Diagram / Image */}
                   {q.imageUrl && (
-                    <div className="my-2 text-center">
+                    <div className="exam-diagram-wrapper my-2 text-center max-w-full overflow-x-auto">
                       <img
                         src={q.imageUrl}
                         alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
-                        className="max-h-52 mx-auto object-contain rounded border border-slate-200"
+                        className="exam-diagram-img max-w-full h-auto max-h-52 mx-auto object-contain rounded border border-slate-200"
                       />
                       {q.imageCaption && (
                         <p className="text-xs italic text-slate-700 mt-1 font-serif">
@@ -249,11 +249,11 @@ export const OfficialExamPreview: React.FC<OfficialExamPreviewProps> = ({
 
                   {/* Chemistry Diagram / Image */}
                   {q.imageUrl && (
-                    <div className="my-2 text-center">
+                    <div className="exam-diagram-wrapper my-2 text-center max-w-full overflow-x-auto">
                       <img
                         src={q.imageUrl}
                         alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
-                        className="max-h-52 mx-auto object-contain rounded border border-slate-200"
+                        className="exam-diagram-img max-w-full h-auto max-h-52 mx-auto object-contain rounded border border-slate-200"
                       />
                       {q.imageCaption && (
                         <p className="text-xs italic text-slate-700 mt-1 font-serif">

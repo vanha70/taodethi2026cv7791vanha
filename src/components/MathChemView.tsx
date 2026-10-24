@@ -27,7 +27,7 @@ export const MathChemView: React.FC<MathChemViewProps> = ({
     // 3. Pattern for $$...$$ (display mode)
     processed = processed.replace(/\$\$([\s\S]+?)\$\$/g, (_, equation) => {
       try {
-        return `<span class="katex-display-wrapper block my-2 overflow-x-auto text-center">${katex.renderToString(
+        return `<span class="katex-display-wrapper block my-2 max-w-full overflow-x-auto text-center">${katex.renderToString(
           equation,
           {
             displayMode: true,
@@ -43,7 +43,7 @@ export const MathChemView: React.FC<MathChemViewProps> = ({
     // 4. Pattern for $...$ (inline mode)
     processed = processed.replace(/\$([^\$\n]+?)\$/g, (_, equation) => {
       try {
-        return `<span class="katex-inline-wrapper mx-0.5 inline-block">${katex.renderToString(
+        return `<span class="katex-inline-wrapper mx-0.5 inline-block max-w-full overflow-x-auto align-middle">${katex.renderToString(
           equation,
           {
             displayMode: false,
@@ -71,7 +71,7 @@ export const MathChemView: React.FC<MathChemViewProps> = ({
 
   return (
     <span
-      className={`math-chem-text leading-relaxed ${className}`}
+      className={`math-chem-text max-w-full overflow-x-auto leading-relaxed ${className}`}
       dangerouslySetInnerHTML={{ __html: renderedContent }}
     />
   );

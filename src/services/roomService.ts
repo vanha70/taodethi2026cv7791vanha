@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase/firebase';
 import { ExamData } from '../types/exam';
+import { safeLocalStorage } from '../utils/browserSafeguards';
 
 export interface ExamRoomDoc {
   id: string;
@@ -366,14 +367,10 @@ export function getResolvedPublicAppUrl(customUrlOverride?: string): string {
   }
 
   if (typeof window !== 'undefined') {
-    try {
-      const savedLocal = localStorage.getItem(PUBLIC_APP_URL_STORAGE_KEY);
-      if (savedLocal && savedLocal.trim()) {
-        const normalizedSaved = normalizePublicBaseUrl(savedLocal);
-        if (normalizedSaved) return normalizedSaved;
-      }
-    } catch {
-      // ignore localStorage read error
+    const savedLocal = safeLocalStorage.getItem(PUBLIC_APP_URL_STORAGE_KEY);
+    if (savedLocal && savedLocal.trim()) {
+      const normalizedSaved = normalizePublicBaseUrl(savedLocal);
+      if (normalizedSaved) return normalizedSaved;
     }
 
     return normalizePublicBaseUrl(getBrowserCurrentBaseUrl());
@@ -401,14 +398,10 @@ export async function savePublicAppUrlSetting(rawUrl: string): Promise<string> {
   const trimmed = (rawUrl || '').trim();
   const normalized = trimmed ? normalizePublicBaseUrl(trimmed) : '';
   if (typeof window !== 'undefined') {
-    try {
-      if (normalized) {
-        localStorage.setItem(PUBLIC_APP_URL_STORAGE_KEY, normalized);
-      } else {
-        localStorage.removeItem(PUBLIC_APP_URL_STORAGE_KEY);
-      }
-    } catch {
-      // ignore localStorage write error
+    if (normalized) {
+      safeLocalStorage.setItem(PUBLIC_APP_URL_STORAGE_KEY, normalized);
+    } else {
+      safeLocalStorage.removeItem(PUBLIC_APP_URL_STORAGE_KEY);
     }
   }
 
@@ -441,31 +434,23 @@ export async function loadPublicAppUrlSetting(): Promise<string> {
         const trimmed = data.customPublicAppUrl.trim();
         const normalized = trimmed ? normalizePublicBaseUrl(trimmed) : '';
         if (typeof window !== 'undefined') {
-          try {
-            if (normalized) {
-              localStorage.setItem(PUBLIC_APP_URL_STORAGE_KEY, normalized);
-            } else {
-              localStorage.removeItem(PUBLIC_APP_URL_STORAGE_KEY);
-            }
-          } catch {
-            // ignore
+          if (normalized) {
+            safeLocalStorage.setItem(PUBLIC_APP_URL_STORAGE_KEY, normalized);
+          } else {
+            safeLocalStorage.removeItem(PUBLIC_APP_URL_STORAGE_KEY);
           }
         }
         return normalized;
       }
     }
   } catch {
-    // fallback to localStorage if offline or permission restricted
+    // fallback to safeLocalStorage if offline or permission restricted
   }
 
   if (typeof window !== 'undefined') {
-    try {
-      const savedLocal = localStorage.getItem(PUBLIC_APP_URL_STORAGE_KEY);
-      if (savedLocal && savedLocal.trim()) {
-        return normalizePublicBaseUrl(savedLocal);
-      }
-    } catch {
-      // ignore
+    const savedLocal = safeLocalStorage.getItem(PUBLIC_APP_URL_STORAGE_KEY);
+    if (savedLocal && savedLocal.trim()) {
+      return normalizePublicBaseUrl(savedLocal);
     }
   }
   return '';

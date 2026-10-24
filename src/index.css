@@ -1,1 +1,61 @@
 @import "tailwindcss";
+
+/* Cross-Browser, Zalo/Facebook WebView & iOS Safari Responsive Safeguards */
+html,
+body {
+  max-width: 100%;
+  overflow-x: clip;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Prevent iOS Safari auto-zoom when focusing inputs on mobile screens (< 768px) */
+@media screen and (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: max(16px, 1em);
+  }
+}
+
+/* KaTeX (mhchem) & Cropped PDF Diagram Overflow Protection on Smartphone Screens */
+.math-chem-text {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.katex-display-wrapper {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.katex-inline-wrapper {
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  vertical-align: middle;
+  -webkit-overflow-scrolling: touch;
+}
+
+.katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+}
+
+.exam-diagram-wrapper {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.exam-diagram-img {
+  max-width: 100%;
+  height: auto;
+}

@@ -11,8 +11,10 @@ import {
   Timer,
   Bell,
   ChevronDown,
+  ChevronUp,
   Shuffle,
   ShieldCheck,
+  LayoutGrid,
 } from 'lucide-react';
 import { ExamData, Part1Question, Part2Question, Part3Question } from '../types/exam';
 import { MathChemView } from './MathChemView';
@@ -172,6 +174,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [showTimerSettings, setShowTimerSettings] = useState<boolean>(false);
   const [showSubmitConfirmModal, setShowSubmitConfirmModal] = useState<boolean>(false);
+  const [isMobilePaletteOpen, setIsMobilePaletteOpen] = useState<boolean>(false);
   const [milestoneAlert, setMilestoneAlert] = useState<string | null>(null);
 
   // Smart Shuffle State (Automatically shuffles questions within each part and options A/B/C/D)
@@ -447,7 +450,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
   const isWarningTime = !isSubmitted && timeLeft > 300 && timeLeft <= 600;
 
   return (
-    <div className="max-w-7xl mx-auto space-y-6 pb-12">
+    <div className="max-w-7xl mx-auto min-h-[100dvh] space-y-6 pb-28 md:pb-12 overflow-x-clip">
       {/* Milestone Time Alert Toast */}
       {milestoneAlert && !isSubmitted && (
         <div className="bg-amber-50 border border-amber-300 text-amber-950 px-4 py-3 rounded-2xl shadow-sm flex items-center justify-between gap-3 animate-in fade-in">
@@ -723,7 +726,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
               type="button"
               onClick={() => setShowSubmitConfirmModal(true)}
               disabled={isSubmittingToFirebase}
-              className="px-5 py-2.5 rounded-xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-md shadow-emerald-200 cursor-pointer transition-all"
+              className="min-h-[44px] px-5 py-2.5 rounded-xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-md shadow-emerald-200 cursor-pointer transition-all"
             >
               {isSubmittingToFirebase ? 'Đang gửi bài...' : 'Nộp Bài Thi'}
             </button>
@@ -731,7 +734,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
             <button
               type="button"
               onClick={onExitTest}
-              className="px-4 py-2 rounded-xl font-semibold text-xs bg-slate-100 hover:bg-slate-200 text-slate-800 cursor-pointer"
+              className="min-h-[44px] px-4 py-2 rounded-xl font-semibold text-xs bg-slate-100 hover:bg-slate-200 text-slate-800 cursor-pointer"
             >
               Quay Lại
             </button>
@@ -804,7 +807,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                       setSubmitIdentityError(null);
                     }}
                     placeholder="Nhập Họ và tên (VD: Nguyễn Văn A)"
-                    className="w-full border border-indigo-300 rounded-lg px-2.5 py-1.5 font-semibold bg-white text-slate-900"
+                    className="w-full min-h-[44px] text-base sm:text-xs border border-indigo-300 rounded-lg px-3 py-2 font-semibold bg-white text-slate-900"
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -815,7 +818,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                       value={localStudentClass}
                       onChange={(e) => setLocalStudentClass(e.target.value)}
                       placeholder="12A1"
-                      className="w-full border border-indigo-300 rounded-lg px-2.5 py-1.5 font-semibold bg-white text-slate-900"
+                      className="w-full min-h-[44px] text-base sm:text-xs border border-indigo-300 rounded-lg px-3 py-2 font-semibold bg-white text-slate-900"
                     />
                   </div>
                   <div>
@@ -825,7 +828,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                       value={localStudentSbd}
                       onChange={(e) => setLocalStudentSbd(e.target.value)}
                       placeholder="012"
-                      className="w-full border border-indigo-300 rounded-lg px-2.5 py-1.5 font-semibold bg-white text-slate-900"
+                      className="w-full min-h-[44px] text-base sm:text-xs border border-indigo-300 rounded-lg px-3 py-2 font-semibold bg-white text-slate-900"
                     />
                   </div>
                 </div>
@@ -836,14 +839,14 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
               <button
                 type="button"
                 onClick={() => setShowSubmitConfirmModal(false)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
+                className="min-h-[44px] px-4 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
               >
                 Làm tiếp
               </button>
               <button
                 type="button"
                 onClick={() => handleDoSubmit(false)}
-                className="px-5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm cursor-pointer"
+                className="min-h-[44px] px-5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm cursor-pointer"
               >
                 Xác nhận Nộp bài
               </button>
@@ -872,21 +875,21 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                 setSubmitIdentityError(null);
               }}
               placeholder="Họ và tên học sinh *"
-              className="border-2 border-indigo-300 focus:border-indigo-600 rounded-xl px-3 py-2 text-xs font-bold bg-white text-slate-900"
+              className="min-h-[44px] border-2 border-indigo-300 focus:border-indigo-600 rounded-xl px-3 py-2 text-base sm:text-xs font-bold bg-white text-slate-900"
             />
             <input
               type="text"
               value={localStudentClass}
               onChange={(e) => setLocalStudentClass(e.target.value)}
               placeholder="Lớp (VD: 12A1) *"
-              className="border border-slate-300 focus:border-indigo-600 rounded-xl px-3 py-2 text-xs font-semibold bg-white text-slate-900"
+              className="min-h-[44px] border border-slate-300 focus:border-indigo-600 rounded-xl px-3 py-2 text-base sm:text-xs font-semibold bg-white text-slate-900"
             />
             <input
               type="text"
               value={localStudentSbd}
               onChange={(e) => setLocalStudentSbd(e.target.value)}
               placeholder="Số báo danh (SBD)"
-              className="border border-slate-300 focus:border-indigo-600 rounded-xl px-3 py-2 text-xs font-semibold bg-white text-slate-900"
+              className="min-h-[44px] border border-slate-300 focus:border-indigo-600 rounded-xl px-3 py-2 text-base sm:text-xs font-semibold bg-white text-slate-900"
             />
           </div>
         </div>
@@ -977,10 +980,10 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
         </div>
       )}
 
-      {/* MAIN LAYOUT: Questions on left (8 cols), Question Palette on right (4 cols) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      {/* MAIN LAYOUT: Questions on left (8 cols on md+), Question Palette on right (4 cols on md+) */}
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
         {/* QUESTIONS COLUMN */}
-        <div className="lg:col-span-8 space-y-8">
+        <div className="md:col-span-8 space-y-8 min-w-0">
           {/* =================================================================
               PHẦN I: CÂU TRẮC NGHIỆM NHIỀU PHƯƠNG ÁN LỰA CHỌN (4 RADIO A, B, C, D)
               ================================================================= */}
@@ -1009,7 +1012,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                   <div
                     key={q.id}
                     id={`q-p1-${q.id}`}
-                    className={`bg-white rounded-xl border p-5 transition-all shadow-2xs ${
+                    className={`bg-white rounded-xl border p-4 sm:p-5 transition-all shadow-2xs overflow-hidden ${
                       isSubmitted
                         ? isCorrect
                           ? 'border-emerald-300 bg-emerald-50/20'
@@ -1020,11 +1023,11 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                     }`}
                   >
                     <div className="flex items-start justify-between gap-3 mb-3">
-                      <div className="flex items-start gap-3">
+                      <div className="flex items-start gap-2.5 sm:gap-3 min-w-0 flex-1">
                         <span className="px-2.5 py-1 rounded-lg bg-sky-100 text-sky-800 font-bold text-xs shrink-0 mt-0.5">
                           Câu {idx + 1}
                         </span>
-                        <div className="flex-1 text-sm text-slate-900 font-medium leading-relaxed">
+                        <div className="flex-1 min-w-0 max-w-full overflow-x-auto text-sm text-slate-900 font-medium leading-relaxed">
                           <MathChemView content={q.content} />
                         </div>
                       </div>
@@ -1037,11 +1040,11 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
 
                     {/* Attached Experiment / Structure Image */}
                     {q.imageUrl && (
-                      <div className="my-3 text-center pl-4 sm:pl-12 pr-2">
+                      <div className="exam-diagram-wrapper my-3 text-center pl-0 sm:pl-12 pr-0 sm:pr-2 max-w-full overflow-x-auto">
                         <img
                           src={q.imageUrl}
                           alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
-                          className="max-h-56 mx-auto object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-2xs"
+                          className="exam-diagram-img max-w-full h-auto max-h-56 mx-auto object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-2xs"
                         />
                         {q.imageCaption && (
                           <p className="text-xs italic text-slate-600 mt-1.5 font-serif">
@@ -1051,7 +1054,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                       </div>
                     )}
 
-                    {/* 4 Radio Buttons (A, B, C, D) */}
+                    {/* 4 Radio Buttons (A, B, C, D) - Minimum 44px touch target height */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pl-0 sm:pl-12">
                       {(['A', 'B', 'C', 'D'] as const).map((opt) => {
                         const isChosen = studentChoice === opt;
@@ -1075,7 +1078,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                         return (
                           <label
                             key={opt}
-                            className={`flex items-start gap-2.5 p-3 rounded-xl border text-left text-xs sm:text-sm transition-all ${
+                            className={`min-h-[44px] flex items-center gap-2.5 p-3 rounded-xl border text-left text-xs sm:text-sm transition-all ${
                               isSubmitted ? 'cursor-default' : 'cursor-pointer'
                             } ${labelStyle}`}
                           >
@@ -1090,12 +1093,12 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                                   setPart1Answers((prev) => ({ ...prev, [q.id]: opt }));
                                 }
                               }}
-                              className="mt-1 w-4 h-4 text-sky-600 border-slate-300 focus:ring-sky-500 shrink-0 accent-sky-600"
+                              className="w-4 h-4 text-sky-600 border-slate-300 focus:ring-sky-500 shrink-0 accent-sky-600"
                             />
-                            <span className="font-bold text-sky-800 shrink-0 mt-0.5">
+                            <span className="font-bold text-sky-800 shrink-0">
                               {opt}.
                             </span>
-                            <div className="flex-1">
+                            <div className="flex-1 min-w-0 max-w-full overflow-x-auto">
                               <MathChemView content={q.options[opt]} />
                             </div>
                           </label>
@@ -1145,14 +1148,14 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                   <div
                     key={q.id}
                     id={`q-p2-${q.id}`}
-                    className="bg-white rounded-xl border border-slate-200 shadow-2xs p-5 space-y-4"
+                    className="bg-white rounded-xl border border-slate-200 shadow-2xs p-4 sm:p-5 space-y-4 overflow-hidden"
                   >
                     <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-start gap-3">
+                      <div className="flex items-start gap-2.5 sm:gap-3 min-w-0 flex-1">
                         <span className="px-2.5 py-1 rounded-lg bg-indigo-100 text-indigo-800 font-bold text-xs shrink-0 mt-0.5">
                           Câu {idx + 1}
                         </span>
-                        <div className="flex-1 text-sm text-slate-900 font-medium leading-relaxed">
+                        <div className="flex-1 min-w-0 max-w-full overflow-x-auto text-sm text-slate-900 font-medium leading-relaxed">
                           <MathChemView content={q.content} />
                         </div>
                       </div>
@@ -1164,11 +1167,11 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                     </div>
 
                     {q.imageUrl && (
-                      <div className="my-3 text-center pl-4 sm:pl-12 pr-2">
+                      <div className="exam-diagram-wrapper my-3 text-center pl-0 sm:pl-12 pr-0 sm:pr-2 max-w-full overflow-x-auto">
                         <img
                           src={q.imageUrl}
                           alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
-                          className="max-h-56 mx-auto object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-2xs"
+                          className="exam-diagram-img max-w-full h-auto max-h-56 mx-auto object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-2xs"
                         />
                         {q.imageCaption && (
                           <p className="text-xs italic text-slate-600 mt-1.5 font-serif">
@@ -1178,108 +1181,104 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                       </div>
                     )}
 
-                    {/* Structured 4-Row Table for a), b), c), d) with [Đúng] and [Sai] buttons */}
-                    <div className="sm:ml-12 overflow-hidden rounded-xl border border-slate-200">
-                      <table className="w-full text-left border-collapse">
-                        <thead>
-                          <tr className="bg-slate-100 border-b border-slate-200 text-[11px] font-bold text-slate-700 uppercase">
-                            <th className="py-2 px-3 w-12 text-center">Ý</th>
-                            <th className="py-2 px-3">Nội dung mệnh đề</th>
-                            <th className="py-2 px-3 w-44 text-center">Lựa chọn Đúng / Sai</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-200 text-xs sm:text-sm">
-                          {q.items.map((item) => {
-                            const studentVal = part2Answers[q.id]?.[item.label];
-                            const isSubCorrect = studentVal === item.isCorrect;
+                    {/* Responsive 4-Statement Layout for a), b), c), d) with >=44px [Đúng] and [Sai] buttons */}
+                    <div className="sm:ml-12 overflow-hidden rounded-xl border border-slate-200 divide-y divide-slate-200">
+                      <div className="hidden sm:grid sm:grid-cols-12 bg-slate-100 border-b border-slate-200 text-[11px] font-bold text-slate-700 uppercase py-2 px-3">
+                        <div className="col-span-1 text-center">Ý</div>
+                        <div className="col-span-7">Nội dung mệnh đề</div>
+                        <div className="col-span-4 text-center">Lựa chọn Đúng / Sai</div>
+                      </div>
 
-                            return (
-                              <tr
-                                key={item.label}
-                                className={
-                                  isSubmitted
-                                    ? isSubCorrect
-                                      ? 'bg-emerald-50/40'
-                                      : 'bg-rose-50/40'
-                                    : 'hover:bg-slate-50/80'
-                                }
-                              >
-                                <td className="py-3 px-3 font-bold text-indigo-900 text-center align-top">
-                                  {item.label})
-                                </td>
-                                <td className="py-3 px-3 text-slate-800 align-top">
-                                  <MathChemView content={item.text} />
-                                  {isSubmitted && (
-                                    <div className="mt-1">
-                                      <span
-                                        className={`inline-block text-[11px] font-bold px-2 py-0.5 rounded ${
-                                          isSubCorrect
-                                            ? 'bg-emerald-100 text-emerald-800'
-                                            : 'bg-rose-100 text-rose-800'
-                                        }`}
-                                      >
-                                        {isSubCorrect ? '✓ Chọn đúng' : '✗ Chọn sai'} (Đáp án chuẩn:{' '}
-                                        {item.isCorrect ? 'Đúng' : 'Sai'})
-                                      </span>
-                                    </div>
-                                  )}
-                                </td>
-                                <td className="py-3 px-3 align-middle">
-                                  <div className="flex items-center justify-center gap-2">
-                                    <button
-                                      type="button"
-                                      disabled={isSubmitted}
-                                      onClick={() => {
-                                        const currentQ = part2Answers[q.id] || {
-                                          a: null,
-                                          b: null,
-                                          c: null,
-                                          d: null,
-                                        };
-                                        setPart2Answers({
-                                          ...part2Answers,
-                                          [q.id]: { ...currentQ, [item.label]: true },
-                                        });
-                                      }}
-                                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
-                                        studentVal === true
-                                          ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs ring-2 ring-emerald-300'
-                                          : 'bg-white text-slate-700 border-slate-300 hover:bg-emerald-50'
+                      {q.items.map((item) => {
+                        const studentVal = part2Answers[q.id]?.[item.label];
+                        const isSubCorrect = studentVal === item.isCorrect;
+
+                        return (
+                          <div
+                            key={item.label}
+                            className={`p-3 flex flex-col sm:grid sm:grid-cols-12 sm:items-center gap-2.5 text-xs sm:text-sm ${
+                              isSubmitted
+                                ? isSubCorrect
+                                  ? 'bg-emerald-50/40'
+                                  : 'bg-rose-50/40'
+                                : 'hover:bg-slate-50/80'
+                            }`}
+                          >
+                            <div className="flex items-start gap-2 sm:col-span-8 min-w-0">
+                              <span className="font-bold text-indigo-900 shrink-0 sm:w-8 sm:text-center">
+                                {item.label})
+                              </span>
+                              <div className="flex-1 min-w-0 max-w-full overflow-x-auto text-slate-800">
+                                <MathChemView content={item.text} />
+                                {isSubmitted && (
+                                  <div className="mt-1">
+                                    <span
+                                      className={`inline-block text-[11px] font-bold px-2 py-0.5 rounded ${
+                                        isSubCorrect
+                                          ? 'bg-emerald-100 text-emerald-800'
+                                          : 'bg-rose-100 text-rose-800'
                                       }`}
                                     >
-                                      [Đúng]
-                                    </button>
-
-                                    <button
-                                      type="button"
-                                      disabled={isSubmitted}
-                                      onClick={() => {
-                                        const currentQ = part2Answers[q.id] || {
-                                          a: null,
-                                          b: null,
-                                          c: null,
-                                          d: null,
-                                        };
-                                        setPart2Answers({
-                                          ...part2Answers,
-                                          [q.id]: { ...currentQ, [item.label]: false },
-                                        });
-                                      }}
-                                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
-                                        studentVal === false
-                                          ? 'bg-rose-600 text-white border-rose-700 shadow-xs ring-2 ring-rose-300'
-                                          : 'bg-white text-slate-700 border-slate-300 hover:bg-rose-50'
-                                      }`}
-                                    >
-                                      [Sai]
-                                    </button>
+                                      {isSubCorrect ? '✓ Chọn đúng' : '✗ Chọn sai'} (Đáp án chuẩn:{' '}
+                                      {item.isCorrect ? 'Đúng' : 'Sai'})
+                                    </span>
                                   </div>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="sm:col-span-4 flex items-center justify-end sm:justify-center gap-2 pt-1 sm:pt-0">
+                              <button
+                                type="button"
+                                disabled={isSubmitted}
+                                onClick={() => {
+                                  const currentQ = part2Answers[q.id] || {
+                                    a: null,
+                                    b: null,
+                                    c: null,
+                                    d: null,
+                                  };
+                                  setPart2Answers({
+                                    ...part2Answers,
+                                    [q.id]: { ...currentQ, [item.label]: true },
+                                  });
+                                }}
+                                className={`min-h-[44px] flex-1 sm:flex-initial min-w-[78px] px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+                                  studentVal === true
+                                    ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs ring-2 ring-emerald-300'
+                                    : 'bg-white text-slate-700 border-slate-300 hover:bg-emerald-50'
+                                }`}
+                              >
+                                [Đúng]
+                              </button>
+
+                              <button
+                                type="button"
+                                disabled={isSubmitted}
+                                onClick={() => {
+                                  const currentQ = part2Answers[q.id] || {
+                                    a: null,
+                                    b: null,
+                                    c: null,
+                                    d: null,
+                                  };
+                                  setPart2Answers({
+                                    ...part2Answers,
+                                    [q.id]: { ...currentQ, [item.label]: false },
+                                  });
+                                }}
+                                className={`min-h-[44px] flex-1 sm:flex-initial min-w-[78px] px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+                                  studentVal === false
+                                    ? 'bg-rose-600 text-white border-rose-700 shadow-xs ring-2 ring-rose-300'
+                                    : 'bg-white text-slate-700 border-slate-300 hover:bg-rose-50'
+                                }`}
+                              >
+                                [Sai]
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
@@ -1315,7 +1314,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                   <div
                     key={q.id}
                     id={`q-p3-${q.id}`}
-                    className={`bg-white rounded-xl border p-5 space-y-3 shadow-2xs ${
+                    className={`bg-white rounded-xl border p-4 sm:p-5 space-y-3 shadow-2xs overflow-hidden ${
                       isSubmitted
                         ? isCorrect
                           ? 'border-emerald-300 bg-emerald-50/20'
@@ -1325,21 +1324,21 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                         : 'border-slate-200'
                     }`}
                   >
-                    <div className="flex items-start gap-3">
+                    <div className="flex items-start gap-2.5 sm:gap-3 min-w-0">
                       <span className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 font-bold text-xs shrink-0 mt-0.5">
                         Câu {idx + 1}
                       </span>
-                      <div className="flex-1 text-sm text-slate-900 font-medium leading-relaxed">
+                      <div className="flex-1 min-w-0 max-w-full overflow-x-auto text-sm text-slate-900 font-medium leading-relaxed">
                         <MathChemView content={q.content} />
                       </div>
                     </div>
 
                     {q.imageUrl && (
-                      <div className="my-3 text-center pl-4 sm:pl-12 pr-2">
+                      <div className="exam-diagram-wrapper my-3 text-center pl-0 sm:pl-12 pr-0 sm:pr-2 max-w-full overflow-x-auto">
                         <img
                           src={q.imageUrl}
                           alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
-                          className="max-h-56 mx-auto object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-2xs"
+                          className="exam-diagram-img max-w-full h-auto max-h-56 mx-auto object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-2xs"
                         />
                         {q.imageCaption && (
                           <p className="text-xs italic text-slate-600 mt-1.5 font-serif">
@@ -1362,7 +1361,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                           value={rawVal}
                           onChange={(e) => handlePart3InputChange(q.id, e.target.value)}
                           placeholder="VD: 2,5"
-                          className="w-28 text-sm font-mono font-bold text-center text-slate-900 border-2 border-emerald-400 rounded-xl px-3 py-1.5 focus:ring-2 focus:ring-emerald-500 bg-white"
+                          className="w-28 min-h-[44px] text-base font-mono font-bold text-center text-slate-900 border-2 border-emerald-400 rounded-xl px-3 py-1.5 focus:ring-2 focus:ring-emerald-500 bg-white"
                         />
                         {q.unit && <span className="text-xs text-slate-500">({q.unit})</span>}
                       </div>
@@ -1400,7 +1399,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                     </div>
 
                     {isSubmitted && q.explanation && (
-                      <div className="mt-3 sm:ml-12 p-3 bg-amber-50 rounded-lg border border-amber-200/80 text-xs">
+                      <div className="mt-3 sm:ml-12 p-3 bg-amber-50 rounded-lg border border-amber-200/80 text-xs max-w-full overflow-x-auto">
                         <span className="font-bold text-amber-900 block mb-1">
                           Hướng dẫn giải chi tiết:
                         </span>
@@ -1415,9 +1414,9 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
         </div>
 
         {/* =================================================================
-            QUESTION PALETTE SIDEBAR (CHIA RÕ 3 KHU VỰC: PHẦN I, PHẦN II, PHẦN III)
+            QUESTION PALETTE SIDEBAR ON DESKTOP (>= 768px)
             ================================================================= */}
-        <div className="lg:col-span-4">
+        <div className="hidden md:block md:col-span-4">
           <div className="sticky top-40 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-5">
             <div>
               <div className="flex items-center justify-between text-xs font-bold text-slate-800 mb-1.5">
@@ -1570,7 +1569,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                 type="button"
                 onClick={() => setShowSubmitConfirmModal(true)}
                 disabled={isSubmittingToFirebase}
-                className="w-full py-2.5 rounded-xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-200 hover:from-emerald-700 hover:to-teal-700 transition-all cursor-pointer"
+                className="w-full min-h-[44px] py-2.5 rounded-xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-200 hover:from-emerald-700 hover:to-teal-700 transition-all cursor-pointer"
               >
                 {isSubmittingToFirebase ? 'Đang gửi bài lên Firebase...' : 'Nộp Bài & Chấm Điểm Ngay'}
               </button>
@@ -1578,6 +1577,197 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
           </div>
         </div>
       </div>
+
+      {/* =================================================================
+          MOBILE STICKY BOTTOM ACTION BAR & COLLAPSIBLE QUESTION PALETTE DRAWER (< 768px)
+          ================================================================= */}
+      <div className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-white/95 backdrop-blur-md border-t border-slate-200 px-3 py-2.5 shadow-xl flex items-center justify-between gap-2.5">
+        <button
+          type="button"
+          onClick={() => setIsMobilePaletteOpen((prev) => !prev)}
+          className="min-h-[44px] flex-1 px-3 py-2 rounded-xl border border-indigo-200 bg-indigo-50 text-indigo-900 font-bold text-xs flex items-center justify-between gap-2 cursor-pointer"
+        >
+          <span className="flex items-center gap-1.5">
+            <LayoutGrid className="w-4 h-4 text-indigo-600 shrink-0" />
+            <span>Bảng câu hỏi</span>
+          </span>
+          <span className="px-2 py-0.5 rounded-md bg-indigo-600 text-white font-mono text-[11px]">
+            {answeredCount}/{totalQuestions}
+          </span>
+          {isMobilePaletteOpen ? (
+            <ChevronDown className="w-4 h-4 text-indigo-600 shrink-0" />
+          ) : (
+            <ChevronUp className="w-4 h-4 text-indigo-600 shrink-0" />
+          )}
+        </button>
+
+        {!isSubmitted ? (
+          <button
+            type="button"
+            onClick={() => setShowSubmitConfirmModal(true)}
+            disabled={isSubmittingToFirebase}
+            className="min-h-[44px] px-4 py-2 rounded-xl font-bold text-xs bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-200 cursor-pointer shrink-0"
+          >
+            {isSubmittingToFirebase ? 'Đang gửi...' : 'Nộp Bài Thi'}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onExitTest}
+            className="min-h-[44px] px-4 py-2 rounded-xl font-bold text-xs bg-slate-200 text-slate-800 cursor-pointer shrink-0"
+          >
+            Quay Lại
+          </button>
+        )}
+      </div>
+
+      {/* Collapsible Mobile Question Palette Bottom Drawer Modal (< 768px) */}
+      {isMobilePaletteOpen && (
+        <div
+          className="md:hidden fixed inset-0 z-40 bg-slate-900/50 backdrop-blur-xs flex flex-col justify-end"
+          onClick={() => setIsMobilePaletteOpen(false)}
+        >
+          <div
+            className="bg-white rounded-t-3xl border-t border-slate-200 shadow-2xl p-4 pb-20 max-h-[80dvh] overflow-y-auto space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+              <div>
+                <h4 className="text-xs font-black text-slate-900 uppercase">
+                  BẢNG DANH SÁCH CÂU HỎI ({answeredCount}/{totalQuestions} CÂU)
+                </h4>
+                <p className="text-[11px] text-slate-500">
+                  Chạm vào số thứ tự câu để di chuyển nhanh đến câu hỏi đó
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsMobilePaletteOpen(false)}
+                className="min-h-[40px] min-w-[40px] rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {activeExamState.part1.length > 0 && (
+              <div className="p-3 rounded-xl bg-sky-50/60 border border-sky-100 space-y-2">
+                <div className="flex items-center justify-between text-xs font-bold text-sky-900">
+                  <span>Phần I (1–{activeExamState.part1.length})</span>
+                  <span>
+                    {answeredP1Count}/{activeExamState.part1.length} câu
+                  </span>
+                </div>
+                <div className="grid grid-cols-6 gap-1.5 text-xs">
+                  {activeExamState.part1.map((q, idx) => {
+                    const ans = part1Answers[q.id];
+                    const isRight = isSubmitted && ans === q.correctAnswer;
+                    const isWrong = isSubmitted && ans !== q.correctAnswer;
+
+                    return (
+                      <a
+                        key={q.id}
+                        href={`#q-p1-${q.id}`}
+                        onClick={() => setIsMobilePaletteOpen(false)}
+                        className={`min-h-[38px] rounded-lg flex items-center justify-center font-bold border text-[11px] ${
+                          isSubmitted
+                            ? isRight
+                              ? 'bg-emerald-600 text-white border-emerald-600'
+                              : isWrong
+                              ? 'bg-rose-600 text-white border-rose-600'
+                              : 'bg-amber-100 text-amber-900 border-amber-300'
+                            : ans
+                            ? 'bg-sky-600 text-white border-sky-600'
+                            : 'bg-white text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        {idx + 1}
+                        {ans && <span className="ml-0.5 text-[10px]">.{ans}</span>}
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {activeExamState.part2.length > 0 && (
+              <div className="p-3 rounded-xl bg-indigo-50/60 border border-indigo-100 space-y-2">
+                <div className="flex items-center justify-between text-xs font-bold text-indigo-900">
+                  <span>Phần II (1–{activeExamState.part2.length})</span>
+                  <span>
+                    {answeredP2Count}/{activeExamState.part2.length} câu
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  {activeExamState.part2.map((q, idx) => {
+                    const qAns = part2Answers[q.id] || { a: null, b: null, c: null, d: null };
+                    const subCount = Object.values(qAns).filter(
+                      (v) => v !== null && v !== undefined
+                    ).length;
+
+                    return (
+                      <a
+                        key={q.id}
+                        href={`#q-p2-${q.id}`}
+                        onClick={() => setIsMobilePaletteOpen(false)}
+                        className={`min-h-[40px] p-2 rounded-lg flex items-center justify-between font-bold border ${
+                          subCount === 4
+                            ? 'bg-indigo-600 text-white border-indigo-600'
+                            : subCount > 0
+                            ? 'bg-indigo-100 text-indigo-900 border-indigo-300'
+                            : 'bg-white text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        <span>Câu {idx + 1}</span>
+                        <span className="text-[10px] font-mono">{subCount}/4 ý</span>
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {activeExamState.part3.length > 0 && (
+              <div className="p-3 rounded-xl bg-emerald-50/60 border border-emerald-100 space-y-2">
+                <div className="flex items-center justify-between text-xs font-bold text-emerald-900">
+                  <span>Phần III (1–{activeExamState.part3.length})</span>
+                  <span>
+                    {answeredP3Count}/{activeExamState.part3.length} câu
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-1.5 text-xs">
+                  {activeExamState.part3.map((q, idx) => {
+                    const val = part3Answers[q.id]?.trim() || '';
+                    const hasVal = Boolean(val);
+                    const isRight = isSubmitted && isShortAnswerMatch(val, q.correctAnswer);
+
+                    return (
+                      <a
+                        key={q.id}
+                        href={`#q-p3-${q.id}`}
+                        onClick={() => setIsMobilePaletteOpen(false)}
+                        className={`min-h-[38px] px-2 rounded-lg flex items-center justify-between font-bold border text-[11px] ${
+                          isSubmitted
+                            ? isRight
+                              ? 'bg-emerald-600 text-white border-emerald-600'
+                              : 'bg-rose-600 text-white border-rose-600'
+                            : hasVal
+                            ? 'bg-emerald-600 text-white border-emerald-600'
+                            : 'bg-white text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        <span>C{idx + 1}</span>
+                        <span className="font-mono text-[10px] truncate max-w-[36px]">
+                          {hasVal ? val : '—'}
+                        </span>
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

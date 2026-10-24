@@ -43,6 +43,7 @@ import {
   buildStudentRoomLink,
   PUBLIC_APP_URL_STORAGE_KEY,
 } from '../services/roomService';
+import { copyTextToClipboard, safeLocalStorage } from '../utils/browserSafeguards';
 
 interface OnlineRoomManagerProps {
   currentExam: ExamData;
@@ -104,11 +105,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
   // Public App URL configuration state (empty = use exact window.location.origin + window.location.pathname)
   const [publicAppUrlInput, setPublicAppUrlInput] = useState<string>(() => {
     if (typeof window !== 'undefined') {
-      try {
-        return localStorage.getItem(PUBLIC_APP_URL_STORAGE_KEY) || '';
-      } catch {
-        return '';
-      }
+      return safeLocalStorage.getItem(PUBLIC_APP_URL_STORAGE_KEY) || '';
     }
     return '';
   });
@@ -235,18 +232,14 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
     }
   };
 
-  // Auto-save custom URL to localStorage as teacher edits the input
+  // Auto-save custom URL to safeLocalStorage as teacher edits the input
   const handlePublicUrlInputChange = (val: string) => {
     setPublicAppUrlInput(val);
-    try {
-      const trimmed = val.trim();
-      if (trimmed) {
-        localStorage.setItem(PUBLIC_APP_URL_STORAGE_KEY, normalizePublicBaseUrl(trimmed));
-      } else {
-        localStorage.removeItem(PUBLIC_APP_URL_STORAGE_KEY);
-      }
-    } catch {
-      // ignore localStorage error
+    const trimmed = val.trim();
+    if (trimmed) {
+      safeLocalStorage.setItem(PUBLIC_APP_URL_STORAGE_KEY, normalizePublicBaseUrl(trimmed));
+    } else {
+      safeLocalStorage.removeItem(PUBLIC_APP_URL_STORAGE_KEY);
     }
   };
 
@@ -270,25 +263,25 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
     ].join('\n');
   };
 
-  // Copy 4-digit Room Code
-  const handleCopyRoomCode = (roomCode: string) => {
-    navigator.clipboard.writeText(roomCode);
+  // Copy 4-digit Room Code (with hidden textarea execCommand('copy') fallback for Zalo/Facebook WebViews)
+  const handleCopyRoomCode = async (roomCode: string) => {
+    await copyTextToClipboard(roomCode);
     setCopiedCodeKey(roomCode);
     setTimeout(() => setCopiedCodeKey(null), 2200);
   };
 
   // Copy direct student Public Link (LINK GỬI HS)
-  const handleCopyDirectLink = (roomCode: string) => {
+  const handleCopyDirectLink = async (roomCode: string) => {
     const directUrl = getDirectRoomUrl(roomCode);
-    navigator.clipboard.writeText(directUrl);
+    await copyTextToClipboard(directUrl);
     setCopiedLinkKey(roomCode);
     setTimeout(() => setCopiedLinkKey(null), 2200);
   };
 
   // Copy full assignment message
-  const handleCopyAssignmentMessage = (room: ExamRoomDoc) => {
+  const handleCopyAssignmentMessage = async (room: ExamRoomDoc) => {
     const msg = buildAssignmentMessage(room);
-    navigator.clipboard.writeText(msg);
+    await copyTextToClipboard(msg);
     setCopiedMsgKey(room.roomCode);
     setTimeout(() => setCopiedMsgKey(null), 2500);
   };
@@ -636,7 +629,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                     setFormError(null);
                   }}
                   placeholder="VD: Khối 12, 10A1, 11A2, 12A1..."
-                  className="w-full text-sm font-bold text-slate-900 border border-slate-300 rounded-xl p-2.5 bg-white focus:ring-2 focus:ring-indigo-500"
+                  className="w-full text-base sm:text-sm font-bold text-slate-900 border border-slate-300 rounded-xl p-2.5 bg-white focus:ring-2 focus:ring-indigo-500"
                 />
                 <div className="flex flex-wrap gap-1">
                   {PRESET_CLASSES.map((cls) => (
@@ -670,7 +663,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                       setFormError(null);
                     }}
                     placeholder="VD: Đề kiểm tra 1 tiết Hóa 12 - Mã 1003"
-                    className="w-full text-xs sm:text-sm font-semibold border border-slate-300 rounded-xl p-2.5 bg-white focus:ring-2 focus:ring-indigo-500"
+                    className="w-full text-base sm:text-sm font-semibold border border-slate-300 rounded-xl p-2.5 bg-white focus:ring-2 focus:ring-indigo-500"
                   />
                 </div>
 
@@ -686,12 +679,12 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                         max={240}
                         value={durationMinutes}
                         onChange={(e) => setDurationMinutes(Number(e.target.value))}
-                        className="w-full text-xs font-bold border border-slate-300 rounded-lg p-2 bg-white"
+                        className="w-full text-base sm:text-xs font-bold border border-slate-300 rounded-lg p-2 bg-white"
                       />
                       <select
                         value={durationMinutes}
                         onChange={(e) => setDurationMinutes(Number(e.target.value))}
-                        className="text-xs font-semibold border border-slate-300 rounded-lg p-2 bg-white"
+                        className="text-base sm:text-xs font-semibold border border-slate-300 rounded-lg p-2 bg-white"
                         title="Chọn nhanh thời lượng"
                       >
                         <option value={15}>15p</option>
@@ -1105,7 +1098,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                 value={publicAppUrlInput}
                 onChange={(e) => handlePublicUrlInputChange(e.target.value)}
                 placeholder={`Mặc định giữ nguyên: ${getBrowserCurrentBaseUrl()}`}
-                className="flex-1 font-mono text-xs sm:text-sm font-bold text-indigo-950 bg-white border-2 border-indigo-300 rounded-xl px-3.5 py-2.5 focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-200"
+                className="flex-1 font-mono text-base sm:text-sm font-bold text-indigo-950 bg-white border-2 border-indigo-300 rounded-xl px-3.5 py-2.5 focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-200"
               />
 
               {publicAppUrlInput.trim() !== '' && (
@@ -1403,7 +1396,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                 value={studentName}
                 onChange={(e) => setStudentName(e.target.value)}
                 placeholder="Nguyễn Văn A"
-                className="w-full border border-slate-300 rounded-xl p-2.5 font-medium"
+                className="w-full text-base sm:text-sm border border-slate-300 rounded-xl p-3 sm:p-2.5 font-medium"
               />
             </div>
 
@@ -1417,7 +1410,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                   value={studentClass}
                   onChange={(e) => setStudentClass(e.target.value)}
                   placeholder="12A1"
-                  className="w-full border border-slate-300 rounded-xl p-2.5 font-medium"
+                  className="w-full text-base sm:text-sm border border-slate-300 rounded-xl p-3 sm:p-2.5 font-medium"
                 />
               </div>
 
@@ -1430,7 +1423,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                   value={studentSbd}
                   onChange={(e) => setStudentSbd(e.target.value)}
                   placeholder="012"
-                  className="w-full border border-slate-300 rounded-xl p-2.5 font-medium"
+                  className="w-full text-base sm:text-sm border border-slate-300 rounded-xl p-3 sm:p-2.5 font-medium"
                 />
               </div>
             </div>
@@ -1439,7 +1432,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
               type="button"
               onClick={handleStudentJoin}
               disabled={isSearchingRoom}
-              className="w-full py-3.5 rounded-xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-md shadow-emerald-200 cursor-pointer transition-all flex items-center justify-center gap-2 mt-4 disabled:opacity-60"
+              className="w-full min-h-[48px] py-3.5 rounded-xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-md shadow-emerald-200 cursor-pointer transition-all flex items-center justify-center gap-2 mt-4 disabled:opacity-60"
             >
               <span>
                 {isSearchingRoom
