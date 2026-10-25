@@ -16,12 +16,24 @@ import {
   Wand2,
   Image as ImageIcon,
   Check,
+  ArrowUp,
+  ArrowDown,
+  Layers,
 } from 'lucide-react';
-import { Part1Question, Part2Question, Part3Question, EssayQuestion } from '../types/exam';
+import {
+  Part1Question,
+  Part2Question,
+  Part3Question,
+  EssayQuestion,
+  QuestionDisplayMode,
+  PdfQuestionCropBox,
+} from '../types/exam';
 import {
   extractPdfDocumentPages,
   parseExamTextToStructuredData,
   generateSamplePdfExamDemo,
+  cropRegionFromRenderedPage,
+  canvasToCompressedDataUrl,
   RenderedPdfPage,
 } from '../utils/pdfExamParser';
 import { normalizeBrokenFormulasToLatex } from '../utils/chemMathNormalizer';
@@ -77,6 +89,10 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
   const [parsedEssay, setParsedEssay] = useState<EssayQuestion[]>([]);
   const [detectionMethods, setDetectionMethods] = useState<string[]>([]);
 
+  // Dual Display Mode in Teacher Preview ('hybrid' shows both 100% original PDF slice + KaTeX text)
+  const [previewDisplayMode, setPreviewDisplayMode] = useState<QuestionDisplayMode>('hybrid');
+  const [activeAdjustCropKey, setActiveAdjustCropKey] = useState<string | null>(null);
+
   // Teacher toggle to inspect hidden answer keys vs Student view (answers strictly hidden)
   const [revealHiddenAnswersForTeacher, setRevealHiddenAnswersForTeacher] = useState<boolean>(false);
 
@@ -121,7 +137,7 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
         ctx.restore();
       }
     };
-    img.src = page.dataUrl;
+    img.src = page.cleanDataUrl || page.dataUrl;
   }, [pdfPages, selectedPageIdx, cropRect, activeTab]);
 
   // Render SMILES structure preview whenever smilesInput changes on canvas_crop tab
@@ -132,9 +148,10 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
 
   const applyParsedResultFromText = (
     text: string,
-    figures: RenderedPdfPage['autoCroppedFigures'] = []
+    figures: RenderedPdfPage['autoCroppedFigures'] = [],
+    slices: RenderedPdfPage['autoSlicedQuestions'] = []
   ) => {
-    const result = parseExamTextToStructuredData(text, figures);
+    const result = parseExamTextToStructuredData(text, figures, slices);
     setParsedPart1(result.part1);
     setParsedPart2(result.part2);
     setParsedPart3(result.part3);
@@ -142,6 +159,68 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
     setDetectionMethods(result.detectedAnswerSummary.detectionMethods);
     if (result.part1.length > 0) {
       setTargetQuestionKey('p1_1');
+    }
+  };
+
+  // Adjust top/bottom Y boundaries of a question's cropped diagram (Chỉnh vùng cắt ảnh)
+  const handleAdjustQuestionCropBox = async (
+    part: 'p1' | 'p2' | 'p3',
+    qId: number,
+    deltaTop: number,
+    deltaBottom: number
+  ) => {
+    const findCropBox = (): PdfQuestionCropBox | undefined => {
+      if (part === 'p1') return parsedPart1.find((q) => q.id === qId)?.sourceCropBox;
+      if (part === 'p2') return parsedPart2.find((q) => q.id === qId)?.sourceCropBox;
+      return parsedPart3.find((q) => q.id === qId)?.sourceCropBox;
+    };
+
+    const currentBox = findCropBox();
+    const targetPage =
+      pdfPages.find((p) => p.pageNumber === (currentBox?.pageNumber || 1)) || pdfPages[0];
+    if (!targetPage) return;
+
+    const baseBox: PdfQuestionCropBox = currentBox || {
+      pageNumber: targetPage.pageNumber,
+      yStart: 120,
+      yEnd: Math.min(targetPage.height - 40, 420),
+      xStart: 18,
+      xEnd: targetPage.width - 18,
+    };
+
+    const nextBox: PdfQuestionCropBox = {
+      ...baseBox,
+      yStart: Math.max(0, Math.min(baseBox.yEnd - 45, baseBox.yStart + deltaTop)),
+      yEnd: Math.min(targetPage.height, Math.max(baseBox.yStart + 45, baseBox.yEnd + deltaBottom)),
+    };
+
+    const newDiagramUrl = await cropRegionFromRenderedPage(targetPage, nextBox, false);
+    if (!newDiagramUrl) return;
+
+    if (part === 'p1') {
+      setParsedPart1((prev) =>
+        prev.map((q) =>
+          q.id === qId
+            ? { ...q, image: newDiagramUrl, imageUrl: newDiagramUrl, sourceCropBox: nextBox }
+            : q
+        )
+      );
+    } else if (part === 'p2') {
+      setParsedPart2((prev) =>
+        prev.map((q) =>
+          q.id === qId
+            ? { ...q, image: newDiagramUrl, imageUrl: newDiagramUrl, sourceCropBox: nextBox }
+            : q
+        )
+      );
+    } else {
+      setParsedPart3((prev) =>
+        prev.map((q) =>
+          q.id === qId
+            ? { ...q, image: newDiagramUrl, imageUrl: newDiagramUrl, sourceCropBox: nextBox }
+            : q
+        )
+      );
     }
   };
 
@@ -163,7 +242,8 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
       setRawText(fullText);
 
       const allAutoFigures = pages.flatMap((p) => p.autoCroppedFigures);
-      const parsed = parseExamTextToStructuredData(fullText, allAutoFigures);
+      const allAutoSlices = pages.flatMap((p) => p.autoSlicedQuestions || []);
+      const parsed = parseExamTextToStructuredData(fullText, allAutoFigures, allAutoSlices);
       setParsedPart1(parsed.part1);
       setParsedPart2(parsed.part2);
       setParsedPart3(parsed.part3);
@@ -171,7 +251,7 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
       setDetectionMethods(parsed.detectedAnswerSummary.detectionMethods);
 
       setStatusBanner(
-        `Đã bóc tách chính xác "ĐỀ ONLINE 0103.pdf": Phần I (${parsed.part1.length} câu = ${(
+        `Đã bóc tách văn bản KaTeX & cắt riêng ${allAutoFigures.length} hình vẽ sạch từ "ĐỀ ONLINE 0103.pdf": Phần I (${parsed.part1.length} câu = ${(
           parsed.part1.length * 0.25
         )
           .toFixed(2)
@@ -183,7 +263,7 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
           parsed.part3.length * 0.25
         )
           .toFixed(2)
-          .replace('.', ',')}đ) kèm ${allAutoFigures.length} hình minh họa!`
+          .replace('.', ',')}đ)!`
       );
     } catch (err: any) {
       console.error('Load ĐỀ ONLINE 0103.pdf error:', err);
@@ -217,7 +297,8 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
       setRawText(fullText);
 
       const allAutoFigures = pages.flatMap((p) => p.autoCroppedFigures);
-      const parsed = parseExamTextToStructuredData(fullText, allAutoFigures);
+      const allAutoSlices = pages.flatMap((p) => p.autoSlicedQuestions || []);
+      const parsed = parseExamTextToStructuredData(fullText, allAutoFigures, allAutoSlices);
       setParsedPart1(parsed.part1);
       setParsedPart2(parsed.part2);
       setParsedPart3(parsed.part3);
@@ -225,7 +306,7 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
       setDetectionMethods(parsed.detectedAnswerSummary.detectionMethods);
 
       setStatusBanner(
-        `Đã đọc thành công ${pages.length} trang PDF "${file.name}": Phần I (${parsed.part1.length} câu) • Phần II (${parsed.part2.length} câu) • Phần III (${parsed.part3.length} câu)!`
+        `Đã đọc văn bản KaTeX & cắt riêng ${allAutoFigures.length} hình minh họa từ ${pages.length} trang PDF "${file.name}": Phần I (${parsed.part1.length} câu) • Phần II (${parsed.part2.length} câu) • Phần III (${parsed.part3.length} câu)!`
       );
     } catch (err: any) {
       console.error('PDF extraction error:', err);
@@ -244,7 +325,11 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
     setPdfPages([demoPage]);
     setSelectedPageIdx(0);
     setRawText(demoPage.fullRawText);
-    applyParsedResultFromText(demoPage.fullRawText, demoPage.autoCroppedFigures);
+    applyParsedResultFromText(
+      demoPage.fullRawText,
+      demoPage.autoCroppedFigures,
+      demoPage.autoSlicedQuestions || []
+    );
     setCropRect({ x: 110, y: 235, w: 660, h: 250 });
     setTargetQuestionKey('p1_2');
     setStatusBanner(
@@ -317,7 +402,7 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
         outCanvas.height
       );
 
-      const base64Url = outCanvas.toDataURL('image/png', 0.95);
+      const base64Url = canvasToCompressedDataUrl(outCanvas, 0.65, 0.7);
       attachImageToTargetQuestion(
         base64Url,
         `Hình vẽ cắt từ trang ${page.pageNumber} PDF`
@@ -326,31 +411,86 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
     img.src = page.dataUrl;
   };
 
-  const attachImageToTargetQuestion = (base64Url: string, caption: string) => {
-    const [partPrefix, idStr] = targetQuestionKey.split('_');
+  const attachImageToTargetQuestion = (
+    base64Url: string,
+    caption: string,
+    explicitTargetKey?: string
+  ) => {
+    const keyToUse = explicitTargetKey || targetQuestionKey;
+    const [partPrefix, idStr] = keyToUse.split('_');
     const qId = Number(idStr);
 
     if (partPrefix === 'p1') {
       setParsedPart1((prev) =>
         prev.map((q) =>
-          q.id === qId ? { ...q, imageUrl: base64Url, imageCaption: caption } : q
+          q.id === qId
+            ? { ...q, image: base64Url, imageUrl: base64Url, imageCaption: caption }
+            : q
         )
       );
     } else if (partPrefix === 'p2') {
       setParsedPart2((prev) =>
         prev.map((q) =>
-          q.id === qId ? { ...q, imageUrl: base64Url, imageCaption: caption } : q
+          q.id === qId
+            ? { ...q, image: base64Url, imageUrl: base64Url, imageCaption: caption }
+            : q
         )
       );
     } else if (partPrefix === 'p3') {
       setParsedPart3((prev) =>
         prev.map((q) =>
-          q.id === qId ? { ...q, imageUrl: base64Url, imageCaption: caption } : q
+          q.id === qId
+            ? { ...q, image: base64Url, imageUrl: base64Url, imageCaption: caption }
+            : q
         )
       );
     }
 
-    setStatusBanner(`Đã gắn ảnh Base64 ("${caption}") vào câu hỏi đã chọn thành công!`);
+    setStatusBanner(`Đã gắn ảnh minh họa ("${caption}") vào câu hỏi thành công!`);
+  };
+
+  // Convert uploaded/pasted image file for a specific question to compressed Base64
+  const handleQuickQuestionImageFile = (file: File | Blob, questionKey: string) => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const rawUrl = ev.target?.result as string;
+      if (!rawUrl) return;
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 960;
+        const scale = img.width > maxW ? maxW / img.width : 1;
+        const c = document.createElement('canvas');
+        c.width = Math.max(40, Math.round(img.width * scale));
+        c.height = Math.max(25, Math.round(img.height * scale));
+        const ctx = c.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, c.width, c.height);
+          ctx.drawImage(img, 0, 0, c.width, c.height);
+          const jpgUrl = c.toDataURL('image/jpeg', 0.8);
+          attachImageToTargetQuestion(jpgUrl, 'Hình minh họa đề thi', questionKey);
+        } else {
+          attachImageToTargetQuestion(rawUrl, 'Hình minh họa đề thi', questionKey);
+        }
+      };
+      img.src = rawUrl;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleQuestionCardPaste = (e: React.ClipboardEvent, questionKey: string) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        e.preventDefault();
+        const file = items[i].getAsFile();
+        if (file) {
+          handleQuickQuestionImageFile(file, questionKey);
+        }
+        return;
+      }
+    }
   };
 
   // Render organic structure via SmilesDrawer (with skeletal canvas fallback)
@@ -461,7 +601,7 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
   const handleAttachSmilesToQuestion = () => {
     const canvas = smilesCanvasRef.current;
     if (!canvas) return;
-    const base64Url = canvas.toDataURL('image/png', 0.95);
+    const base64Url = canvasToCompressedDataUrl(canvas, 0.65, 0.7);
     attachImageToTargetQuestion(base64Url, smilesLabel || `Cấu tạo (${smilesInput})`);
   };
 
@@ -498,7 +638,11 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
     } catch (err: any) {
       console.error(err);
       // Fallback to deterministic parser
-      applyParsedResultFromText(rawText, pdfPages.flatMap((p) => p.autoCroppedFigures));
+      applyParsedResultFromText(
+        rawText,
+        pdfPages.flatMap((p) => p.autoCroppedFigures),
+        pdfPages.flatMap((p) => p.autoSlicedQuestions || [])
+      );
       setStatusBanner('Đã bóc tách cấu trúc đề thi và chuẩn hóa công thức KaTeX (mhchem)!');
     } finally {
       setIsLoading(false);
@@ -517,7 +661,8 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
     ) {
       const quickParsed = parseExamTextToStructuredData(
         rawText,
-        pdfPages.flatMap((p) => p.autoCroppedFigures)
+        pdfPages.flatMap((p) => p.autoCroppedFigures),
+        pdfPages.flatMap((p) => p.autoSlicedQuestions || [])
       );
       onImportParsed(
         {
@@ -561,14 +706,14 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-sm sm:text-lg font-bold">
-                  TẢI LÊN ĐỀ THI PDF & BÓC TÁCH TỰ ĐỘNG (PDF.js + KaTeX mhchem)
+                  TẢI LÊN ĐỀ THI PDF & GIỮ NGUYÊN 100% ĐỊNH DẠNG GỐC (HYBRID CANVAS SLICING + KATEX)
                 </h2>
                 <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
-                  Ẩn Đáp Án Ngầm 100%
+                  0% Lỗi Công Thức • 0% Thiếu Hình Vẽ
                 </span>
               </div>
               <p className="text-xs text-slate-300 mt-0.5">
-                Đọc văn bản PDF • Tự động nhận diện đáp án đúng (gạch chân, tô đỏ, in đậm, bảng đáp án) • Chuẩn hóa công thức $\ce&#123;H2SO4&#125;$ • Cắt hình vẽ &lt;canvas&gt;
+                Cắt nguyên khối từng câu hỏi từ PDF (scale 2.2x) • Tự động xóa vạch gạch chân &amp; dòng Đáp án • Chuẩn hóa KaTeX $\ce&#123;H2SO4&#125;$ • Cắt ô lượng tử &amp; hình vẽ thí nghiệm
               </p>
             </div>
           </div>
@@ -593,7 +738,7 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
               }`}
             >
               <FileUp className="w-3.5 h-3.5" />
-              <span>1. Tải File PDF & Nhận Diện Câu Hỏi ({totalParsedQuestions})</span>
+              <span>1. Tải File PDF &amp; Xem Trước Cắt Ảnh ({totalParsedQuestions})</span>
             </button>
 
             <button
@@ -606,7 +751,7 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
               }`}
             >
               <Crop className="w-3.5 h-3.5" />
-              <span>2. Cắt Hình Vẽ PDF (&lt;canvas&gt;) & SmilesDrawer</span>
+              <span>2. Cắt Hình Vẽ PDF (&lt;canvas&gt;) &amp; SmilesDrawer</span>
             </button>
 
             <button
@@ -619,7 +764,7 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
               }`}
             >
               <FileCode className="w-3.5 h-3.5" />
-              <span>3. Văn Bản Nguồn & Chuẩn Hóa LaTeX / AI</span>
+              <span>3. Văn Bản Nguồn &amp; Chuẩn Hóa LaTeX / AI</span>
             </button>
           </div>
 
@@ -695,7 +840,7 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
                       : 'Nhấn để chọn hoặc kéo thả File PDF Đề Thi vào đây'}
                   </p>
                   <p className="text-[11px] text-slate-500 mt-1 max-w-md">
-                    Hỗ trợ đề thi PDF có đáp án gạch chân, tô đỏ, in đậm, đánh dấu sao (*) hoặc bảng đáp án ở cuối file. Hệ thống tự động sửa lỗi vỡ công thức (H2SO4, Fe3+, t0) sang KaTeX (mhchem).
+                    Hệ thống tự động cắt nguyên khối hình ảnh từng câu hỏi từ PDF (giữ nguyên 100% công thức MathType, ký hiệu đồng vị, ô lượng tử &amp; hình vẽ thí nghiệm) kết hợp xóa tự động vạch gạch chân đáp án và chuẩn hóa KaTeX (mhchem).
                   </p>
                 </label>
 
@@ -705,10 +850,10 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
                         <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                        Bảo Mật Đáp Án & Chuẩn Hóa KaTeX
+                        Hybrid Canvas Slicing + KaTeX
                       </span>
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
-                        Sẵn sàng chấm điểm
+                        Giữ 100% định dạng gốc
                       </span>
                     </div>
 
@@ -776,16 +921,19 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
                 </div>
               </div>
 
-              {/* Preview of Extracted Questions with KaTeX mhchem & Cropped Figures */}
+              {/* Preview of Extracted Questions (Pure HTML + KaTeX Text + Clean Isolated Diagram Cropping) */}
               {totalParsedQuestions > 0 ? (
                 <div className="space-y-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
-                    <h3 className="text-xs sm:text-sm font-bold text-slate-900">
-                      XEM TRƯỚC ĐỀ THI ĐÃ BÓC TÁCH & RENDER CÔNG THỨC KATEX (MHCHEM)
-                    </h3>
-                    <span className="text-[11px] text-emerald-700 font-semibold bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
-                      ✓ Đã tự động xóa dấu *, gạch chân & tô đỏ trên giao diện Học sinh
-                    </span>
+                  <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-100/80 p-3 rounded-xl border border-slate-200">
+                    <div>
+                      <h3 className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                        <Layers className="w-4 h-4 text-indigo-600" />
+                        <span>XEM TRƯỚC ĐỀ THI (CHỮ VĂN BẢN KATEX SẮC NÉT • CHỈ CẮT RIÊNG VÙNG HÌNH VẼ)</span>
+                      </h3>
+                      <p className="text-[11px] text-slate-600 mt-0.5">
+                        Toàn bộ câu dẫn và đáp án A, B, C, D hiển thị bằng văn bản HTML + KaTeX. Chỉ những câu có hình minh họa mới hiển thị 1 khung ảnh duy nhất (đã tự động lót nền trắng, không lẹm chữ).
+                      </p>
+                    </div>
                   </div>
 
                   {/* Part I Preview */}
@@ -795,62 +943,181 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
                         PHẦN I. Câu trắc nghiệm nhiều phương án lựa chọn ({parsedPart1.length} câu)
                       </div>
                       <div className="grid grid-cols-1 gap-3">
-                        {parsedPart1.map((q) => (
-                          <div
-                            key={q.id}
-                            className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-2.5"
-                          >
-                            <div className="flex items-start justify-between gap-2">
+                        {parsedPart1.map((q) => {
+                          const adjustKey = `p1_${q.id}`;
+                          const isAdjusting = activeAdjustCropKey === adjustKey;
+                          const imgSrc = q.image || q.imageUrl;
+                          return (
+                            <div
+                              key={q.id}
+                              onPaste={(e) => handleQuestionCardPaste(e, adjustKey)}
+                              tabIndex={0}
+                              className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="px-2.5 py-0.5 rounded-lg bg-indigo-100 text-indigo-800 font-bold text-xs">
+                                    Phần I • Câu {q.id}
+                                  </span>
+                                  {imgSrc && (
+                                    <span className="px-2 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200 text-[10px] font-bold">
+                                      ✓ Có hình minh họa (Đã lọc sạch viền chữ)
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <label className="px-2.5 py-1 rounded-lg text-[11px] font-bold border bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100 flex items-center gap-1 cursor-pointer transition-colors">
+                                    <input
+                                      type="file"
+                                      accept="image/*"
+                                      onChange={(e) => {
+                                        const f = e.target.files?.[0];
+                                        if (f) handleQuickQuestionImageFile(f, adjustKey);
+                                        e.target.value = '';
+                                      }}
+                                      className="hidden"
+                                    />
+                                    <span>🖼️ Thêm/Đổi ảnh minh họa</span>
+                                  </label>
+
+                                  {imgSrc ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setActiveAdjustCropKey(isAdjusting ? null : adjustKey)
+                                      }
+                                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border flex items-center gap-1 cursor-pointer transition-colors ${
+                                        isAdjusting
+                                          ? 'bg-indigo-600 text-white border-indigo-600'
+                                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-indigo-50 hover:text-indigo-700'
+                                      }`}
+                                    >
+                                      <Crop className="w-3 h-3" />
+                                      <span>Chỉnh vùng cắt hình</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setTargetQuestionKey(`p1_${q.id}`);
+                                        setActiveTab('canvas_crop');
+                                      }}
+                                      className="px-2.5 py-1 rounded-lg text-[11px] font-bold border bg-slate-50 text-slate-600 border-slate-200 hover:bg-indigo-50 hover:text-indigo-700 flex items-center gap-1 cursor-pointer transition-colors"
+                                    >
+                                      <Crop className="w-3 h-3" />
+                                      <span>Cắt hình từ PDF</span>
+                                    </button>
+                                  )}
+                                  {revealHiddenAnswersForTeacher && (
+                                    <span className="shrink-0 px-2 py-0.5 rounded bg-amber-100 border border-amber-300 text-amber-900 text-[11px] font-bold">
+                                      Đáp án ngầm: {q.correctAnswer}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Interactive Crop Adjustment Bar */}
+                              {isAdjusting && (
+                                <div className="p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-200 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                  <span className="font-bold text-indigo-950">
+                                    Điều chỉnh khung cắt hình vẽ Câu {q.id} (Trang{' '}
+                                    {q.sourceCropBox?.pageNumber || 1}):
+                                  </span>
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAdjustQuestionCropBox('p1', q.id, -16, 0)}
+                                      className="px-2 py-1 rounded bg-white border border-indigo-200 text-indigo-800 font-semibold hover:bg-indigo-100 flex items-center gap-1 cursor-pointer"
+                                    >
+                                      <ArrowUp className="w-3 h-3" /> Mở rộng mép trên
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAdjustQuestionCropBox('p1', q.id, 14, 0)}
+                                      className="px-2 py-1 rounded bg-white border border-slate-200 text-slate-700 font-semibold hover:bg-slate-100 flex items-center gap-1 cursor-pointer"
+                                    >
+                                      <ArrowDown className="w-3 h-3" /> Thu hẹp mép trên
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAdjustQuestionCropBox('p1', q.id, 0, 16)}
+                                      className="px-2 py-1 rounded bg-white border border-indigo-200 text-indigo-800 font-semibold hover:bg-indigo-100 flex items-center gap-1 cursor-pointer"
+                                    >
+                                      <ArrowDown className="w-3 h-3" /> Mở rộng mép dưới
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAdjustQuestionCropBox('p1', q.id, 0, -14)}
+                                      className="px-2 py-1 rounded bg-white border border-slate-200 text-slate-700 font-semibold hover:bg-slate-100 flex items-center gap-1 cursor-pointer"
+                                    >
+                                      <ArrowUp className="w-3 h-3" /> Thu hẹp mép dưới
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setTargetQuestionKey(`p1_${q.id}`);
+                                        if (q.sourceCropBox?.pageNumber) {
+                                          setSelectedPageIdx(
+                                            Math.max(0, q.sourceCropBox.pageNumber - 1)
+                                          );
+                                        }
+                                        setActiveTab('canvas_crop');
+                                      }}
+                                      className="px-2.5 py-1 rounded bg-indigo-600 text-white font-bold hover:bg-indigo-700 cursor-pointer"
+                                    >
+                                      Cắt hình vẽ thủ công trên trang PDF
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Pure HTML + KaTeX Question Stem */}
                               <div className="text-xs sm:text-sm text-slate-900">
                                 <span className="font-bold text-indigo-700 mr-1.5">
                                   Câu {q.id}:
                                 </span>
                                 <MathChemView content={q.content} />
                               </div>
-                              {revealHiddenAnswersForTeacher && (
-                                <span className="shrink-0 px-2 py-0.5 rounded bg-amber-100 border border-amber-300 text-amber-900 text-[11px] font-bold">
-                                  Đáp án ngầm: {q.correctAnswer}
-                                </span>
+
+                              {/* Single Isolated Cropped Diagram Immediately Below Question Stem */}
+                              {imgSrc && (
+                                <div className="text-center">
+                                  <img
+                                    src={imgSrc}
+                                    alt={q.imageCaption || `Hình câu ${q.id}`}
+                                    className="my-3 max-h-80 w-auto mx-auto rounded border border-slate-200 shadow-sm object-contain bg-white p-1"
+                                  />
+                                  {q.imageCaption && (
+                                    <span className="text-[11px] text-slate-500 italic block">
+                                      {q.imageCaption}
+                                    </span>
+                                  )}
+                                </div>
                               )}
-                            </div>
 
-                            {/* Attached Cropped Image / Diagram */}
-                            {q.imageUrl && (
-                              <div className="my-2 p-2.5 bg-slate-50 rounded-xl border border-slate-200 flex flex-col items-center">
-                                <img
-                                  src={q.imageUrl}
-                                  alt={q.imageCaption || `Hình câu ${q.id}`}
-                                  className="max-h-48 object-contain rounded border border-white shadow-2xs"
-                                />
-                                {q.imageCaption && (
-                                  <span className="text-[11px] text-slate-500 italic mt-1">
-                                    {q.imageCaption}
-                                  </span>
-                                )}
+                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
+                                {(['A', 'B', 'C', 'D'] as const).map((optKey) => {
+                                  const isAns =
+                                    revealHiddenAnswersForTeacher && q.correctAnswer === optKey;
+                                  return (
+                                    <div
+                                      key={optKey}
+                                      className={`p-2 rounded-lg border flex items-center gap-1.5 ${
+                                        isAns
+                                          ? 'border-emerald-400 bg-emerald-50 font-semibold text-emerald-950'
+                                          : 'border-slate-200 bg-slate-50/60 text-slate-800'
+                                      }`}
+                                    >
+                                      <span className="font-bold text-indigo-700">{optKey}.</span>
+                                      <MathChemView content={q.options[optKey]} />
+                                    </div>
+                                  );
+                                })}
                               </div>
-                            )}
-
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
-                              {(['A', 'B', 'C', 'D'] as const).map((optKey) => {
-                                const isAns =
-                                  revealHiddenAnswersForTeacher && q.correctAnswer === optKey;
-                                return (
-                                  <div
-                                    key={optKey}
-                                    className={`p-2 rounded-lg border flex items-center gap-1.5 ${
-                                      isAns
-                                        ? 'border-emerald-400 bg-emerald-50 font-semibold text-emerald-950'
-                                        : 'border-slate-200 bg-slate-50/60 text-slate-800'
-                                    }`}
-                                  >
-                                    <span className="font-bold text-indigo-700">{optKey}.</span>
-                                    <MathChemView content={q.options[optKey]} />
-                                  </div>
-                                );
-                              })}
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -861,62 +1128,180 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
                       <div className="text-xs font-bold text-indigo-900 bg-indigo-50 px-3 py-1.5 rounded-lg border border-indigo-100">
                         PHẦN II. Câu trắc nghiệm Đúng/Sai ({parsedPart2.length} câu • {(parsedPart2.length * 1.0).toFixed(2).replace('.', ',')} điểm)
                       </div>
-                      {parsedPart2.map((q) => (
-                        <div
-                          key={q.id}
-                          className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-2.5"
-                        >
-                          <div className="text-xs sm:text-sm text-slate-900">
-                            <span className="font-bold text-indigo-700 mr-1.5">
-                              Câu {q.id} (Câu {parsedPart1.length + q.id}):
-                            </span>
-                            <MathChemView content={q.content} />
-                          </div>
-
-                          {/* Attached Cropped Image / Diagram for Part II */}
-                          {q.imageUrl && (
-                            <div className="my-2 p-2.5 bg-slate-50 rounded-xl border border-slate-200 flex flex-col items-center">
-                              <img
-                                src={q.imageUrl}
-                                alt={q.imageCaption || `Hình Phần II - Câu ${q.id}`}
-                                className="max-h-48 object-contain rounded border border-white shadow-2xs"
-                              />
-                              {q.imageCaption && (
-                                <span className="text-[11px] text-slate-500 italic mt-1">
-                                  {q.imageCaption}
+                      {parsedPart2.map((q) => {
+                        const adjustKey = `p2_${q.id}`;
+                        const isAdjusting = activeAdjustCropKey === adjustKey;
+                        const imgSrc = q.image || q.imageUrl;
+                        return (
+                          <div
+                            key={q.id}
+                            onPaste={(e) => handleQuestionCardPaste(e, adjustKey)}
+                            tabIndex={0}
+                            className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                              <div className="flex items-center gap-2">
+                                <span className="px-2.5 py-0.5 rounded-lg bg-indigo-100 text-indigo-800 font-bold text-xs">
+                                  Phần II • Câu {q.id} (Câu {parsedPart1.length + q.id})
                                 </span>
-                              )}
-                            </div>
-                          )}
-
-                          <div className="space-y-1.5 pl-2">
-                            {q.items.map((item) => (
-                              <div
-                                key={item.label}
-                                className="flex items-center justify-between gap-2 text-xs p-1.5 rounded-lg bg-slate-50 border border-slate-200/80"
-                              >
-                                <div>
-                                  <span className="font-bold text-indigo-700 mr-1.5">
-                                    {item.label})
-                                  </span>
-                                  <MathChemView content={item.text} />
-                                </div>
-                                {revealHiddenAnswersForTeacher && (
-                                  <span
-                                    className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${
-                                      item.isCorrect
-                                        ? 'bg-emerald-100 text-emerald-800'
-                                        : 'bg-rose-100 text-rose-800'
-                                    }`}
-                                  >
-                                    {item.isCorrect ? 'Đúng (Gạch chân)' : 'Sai'}
+                                {imgSrc && (
+                                  <span className="px-2 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200 text-[10px] font-bold">
+                                    ✓ Có hình minh họa (Đã lọc sạch viền chữ)
                                   </span>
                                 )}
                               </div>
-                            ))}
+
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <label className="px-2.5 py-1 rounded-lg text-[11px] font-bold border bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100 flex items-center gap-1 cursor-pointer transition-colors">
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    onChange={(e) => {
+                                      const f = e.target.files?.[0];
+                                      if (f) handleQuickQuestionImageFile(f, adjustKey);
+                                      e.target.value = '';
+                                    }}
+                                    className="hidden"
+                                  />
+                                  <span>🖼️ Thêm/Đổi ảnh minh họa</span>
+                                </label>
+
+                                {imgSrc ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setActiveAdjustCropKey(isAdjusting ? null : adjustKey)
+                                    }
+                                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border flex items-center gap-1 cursor-pointer transition-colors ${
+                                      isAdjusting
+                                        ? 'bg-indigo-600 text-white border-indigo-600'
+                                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-indigo-50 hover:text-indigo-700'
+                                    }`}
+                                  >
+                                    <Crop className="w-3 h-3" />
+                                    <span>Chỉnh vùng cắt hình</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setTargetQuestionKey(`p2_${q.id}`);
+                                      setActiveTab('canvas_crop');
+                                    }}
+                                    className="px-2.5 py-1 rounded-lg text-[11px] font-bold border bg-slate-50 text-slate-600 border-slate-200 hover:bg-indigo-50 hover:text-indigo-700 flex items-center gap-1 cursor-pointer transition-colors"
+                                  >
+                                    <Crop className="w-3 h-3" />
+                                    <span>Cắt hình từ PDF</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            {isAdjusting && (
+                              <div className="p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-200 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                <span className="font-bold text-indigo-950">
+                                  Điều chỉnh khung cắt hình vẽ Phần II - Câu {q.id}:
+                                </span>
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAdjustQuestionCropBox('p2', q.id, -16, 0)}
+                                    className="px-2 py-1 rounded bg-white border border-indigo-200 text-indigo-800 font-semibold hover:bg-indigo-100 flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <ArrowUp className="w-3 h-3" /> Mở rộng mép trên
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAdjustQuestionCropBox('p2', q.id, 14, 0)}
+                                    className="px-2 py-1 rounded bg-white border border-slate-200 text-slate-700 font-semibold hover:bg-slate-100 flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <ArrowDown className="w-3 h-3" /> Thu hẹp mép trên
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAdjustQuestionCropBox('p2', q.id, 0, 16)}
+                                    className="px-2 py-1 rounded bg-white border border-indigo-200 text-indigo-800 font-semibold hover:bg-indigo-100 flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <ArrowDown className="w-3 h-3" /> Mở rộng mép dưới
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAdjustQuestionCropBox('p2', q.id, 0, -14)}
+                                    className="px-2 py-1 rounded bg-white border border-slate-200 text-slate-700 font-semibold hover:bg-slate-100 flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <ArrowUp className="w-3 h-3" /> Thu hẹp mép dưới
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setTargetQuestionKey(`p2_${q.id}`);
+                                      if (q.sourceCropBox?.pageNumber) {
+                                        setSelectedPageIdx(
+                                          Math.max(0, q.sourceCropBox.pageNumber - 1)
+                                        );
+                                      }
+                                      setActiveTab('canvas_crop');
+                                    }}
+                                    className="px-2.5 py-1 rounded bg-indigo-600 text-white font-bold hover:bg-indigo-700 cursor-pointer"
+                                  >
+                                    Cắt hình vẽ thủ công trên trang PDF
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="text-xs sm:text-sm text-slate-900">
+                              <span className="font-bold text-indigo-700 mr-1.5">
+                                Câu {q.id} (Câu {parsedPart1.length + q.id}):
+                              </span>
+                              <MathChemView content={q.content} />
+                            </div>
+
+                            {/* Single Isolated Cropped Diagram Immediately Below Question Stem */}
+                            {imgSrc && (
+                              <div className="text-center">
+                                <img
+                                  src={imgSrc}
+                                  alt={q.imageCaption || `Hình Phần II - Câu ${q.id}`}
+                                  className="my-3 max-h-80 w-auto mx-auto rounded border border-slate-200 shadow-sm object-contain bg-white p-1"
+                                />
+                                {q.imageCaption && (
+                                  <span className="text-[11px] text-slate-500 italic block">
+                                    {q.imageCaption}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            <div className="space-y-1.5 pl-2">
+                              {q.items.map((item) => (
+                                <div
+                                  key={item.label}
+                                  className="flex items-center justify-between gap-2 text-xs p-1.5 rounded-lg bg-slate-50 border border-slate-200/80"
+                                >
+                                  <div>
+                                    <span className="font-bold text-indigo-700 mr-1.5">
+                                      {item.label})
+                                    </span>
+                                    <MathChemView content={item.text} />
+                                  </div>
+                                  {revealHiddenAnswersForTeacher && (
+                                    <span
+                                      className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                                        item.isCorrect
+                                          ? 'bg-emerald-100 text-emerald-800'
+                                          : 'bg-rose-100 text-rose-800'
+                                      }`}
+                                    >
+                                      {item.isCorrect ? 'Đúng (Gạch chân)' : 'Sai'}
+                                    </span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
 
@@ -926,22 +1311,135 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
                       <div className="text-xs font-bold text-indigo-900 bg-indigo-50 px-3 py-1.5 rounded-lg border border-indigo-100">
                         PHẦN III. Câu trắc nghiệm trả lời ngắn ({parsedPart3.length} câu)
                       </div>
-                      {parsedPart3.map((q) => (
-                        <div
-                          key={q.id}
-                          className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs flex items-start justify-between gap-3"
-                        >
-                          <div className="text-xs sm:text-sm text-slate-900">
-                            <span className="font-bold text-indigo-700 mr-1.5">Câu {q.id}:</span>
-                            <MathChemView content={q.content} />
+                      {parsedPart3.map((q) => {
+                        const adjustKey = `p3_${q.id}`;
+                        const isAdjusting = activeAdjustCropKey === adjustKey;
+                        const imgSrc = q.image || q.imageUrl;
+                        return (
+                          <div
+                            key={q.id}
+                            onPaste={(e) => handleQuestionCardPaste(e, adjustKey)}
+                            tabIndex={0}
+                            className="p-3.5 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                              <div className="flex items-center gap-2">
+                                <span className="px-2.5 py-0.5 rounded-lg bg-emerald-100 text-emerald-800 font-bold text-xs">
+                                  Phần III • Câu {q.id} (Câu{' '}
+                                  {parsedPart1.length + parsedPart2.length + q.id})
+                                </span>
+                                {imgSrc && (
+                                  <span className="px-2 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200 text-[10px] font-bold">
+                                    ✓ Có hình minh họa
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <label className="px-2.5 py-1 rounded-lg text-[11px] font-bold border bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100 flex items-center gap-1 cursor-pointer transition-colors">
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    onChange={(e) => {
+                                      const f = e.target.files?.[0];
+                                      if (f) handleQuickQuestionImageFile(f, adjustKey);
+                                      e.target.value = '';
+                                    }}
+                                    className="hidden"
+                                  />
+                                  <span>🖼️ Thêm/Đổi ảnh minh họa</span>
+                                </label>
+
+                                {imgSrc ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setActiveAdjustCropKey(isAdjusting ? null : adjustKey)
+                                    }
+                                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border flex items-center gap-1 cursor-pointer transition-colors ${
+                                      isAdjusting
+                                        ? 'bg-indigo-600 text-white border-indigo-600'
+                                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-indigo-50 hover:text-indigo-700'
+                                    }`}
+                                  >
+                                    <Crop className="w-3 h-3" />
+                                    <span>Chỉnh vùng cắt hình</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setTargetQuestionKey(`p3_${q.id}`);
+                                      setActiveTab('canvas_crop');
+                                    }}
+                                    className="px-2.5 py-1 rounded-lg text-[11px] font-bold border bg-slate-50 text-slate-600 border-slate-200 hover:bg-indigo-50 hover:text-indigo-700 flex items-center gap-1 cursor-pointer transition-colors"
+                                  >
+                                    <Crop className="w-3 h-3" />
+                                    <span>Cắt hình từ PDF</span>
+                                  </button>
+                                )}
+                                {revealHiddenAnswersForTeacher && (
+                                  <span className="shrink-0 px-2.5 py-0.5 rounded bg-amber-100 border border-amber-300 text-amber-900 text-xs font-bold">
+                                    Đáp số ngầm: {q.correctAnswer}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {isAdjusting && (
+                              <div className="p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-200 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                <span className="font-bold text-indigo-950">
+                                  Điều chỉnh khung cắt hình vẽ Phần III - Câu {q.id}:
+                                </span>
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAdjustQuestionCropBox('p3', q.id, -16, 0)}
+                                    className="px-2 py-1 rounded bg-white border border-indigo-200 text-indigo-800 font-semibold hover:bg-indigo-100 flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <ArrowUp className="w-3 h-3" /> Mở rộng mép trên
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAdjustQuestionCropBox('p3', q.id, 14, 0)}
+                                    className="px-2 py-1 rounded bg-white border border-slate-200 text-slate-700 font-semibold hover:bg-slate-100 flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <ArrowDown className="w-3 h-3" /> Thu hẹp mép trên
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAdjustQuestionCropBox('p3', q.id, 0, 16)}
+                                    className="px-2 py-1 rounded bg-white border border-indigo-200 text-indigo-800 font-semibold hover:bg-indigo-100 flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <ArrowDown className="w-3 h-3" /> Mở rộng mép dưới
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAdjustQuestionCropBox('p3', q.id, 0, -14)}
+                                    className="px-2 py-1 rounded bg-white border border-slate-200 text-slate-700 font-semibold hover:bg-slate-100 flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <ArrowUp className="w-3 h-3" /> Thu hẹp mép dưới
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="text-xs sm:text-sm text-slate-900">
+                              <span className="font-bold text-indigo-700 mr-1.5">Câu {q.id}:</span>
+                              <MathChemView content={q.content} />
+                              {imgSrc && (
+                                <div className="text-center">
+                                  <img
+                                    src={imgSrc}
+                                    alt={q.imageCaption || `Hình Phần III - Câu ${q.id}`}
+                                    className="my-3 max-h-80 w-auto mx-auto rounded border border-slate-200 shadow-sm object-contain bg-white p-1"
+                                  />
+                                </div>
+                              )}
+                            </div>
                           </div>
-                          {revealHiddenAnswersForTeacher && (
-                            <span className="shrink-0 px-2.5 py-1 rounded bg-amber-100 border border-amber-300 text-amber-900 text-xs font-bold">
-                              Đáp số ngầm: {q.correctAnswer}
-                            </span>
-                          )}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -1185,7 +1683,8 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
                       setRawText(normalized);
                       applyParsedResultFromText(
                         normalized,
-                        pdfPages.flatMap((p) => p.autoCroppedFigures)
+                        pdfPages.flatMap((p) => p.autoCroppedFigures),
+                        pdfPages.flatMap((p) => p.autoSlicedQuestions || [])
                       );
                       setStatusBanner(
                         'Đã chuẩn hóa toàn bộ công thức hóa học bị lỗi font (H2SO4, Fe3+, t0) sang định dạng LaTeX / mhchem!'
@@ -1220,7 +1719,8 @@ export const RawImportModal: React.FC<RawImportModalProps> = ({
                   setRawText(e.target.value);
                   applyParsedResultFromText(
                     e.target.value,
-                    pdfPages.flatMap((p) => p.autoCroppedFigures)
+                    pdfPages.flatMap((p) => p.autoCroppedFigures),
+                    pdfPages.flatMap((p) => p.autoSlicedQuestions || [])
                   );
                 }}
                 placeholder="Dán nội dung đề thi hoặc tải file PDF ở tab 1..."

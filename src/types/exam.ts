@@ -1,5 +1,16 @@
 export type CognitiveLevel = 'Biết' | 'Hiểu' | 'Vận dụng' | 'Vận dụng cao';
 
+export type QuestionDisplayMode = 'pdf_original' | 'hybrid' | 'text_katex';
+
+export interface PdfQuestionCropBox {
+  pageNumber: number;
+  yStart: number;
+  yEnd: number;
+  stemYEnd?: number;
+  xStart?: number;
+  xEnd?: number;
+}
+
 export interface Part1Question {
   id: number;
   content: string;
@@ -13,9 +24,14 @@ export interface Part1Question {
   level: CognitiveLevel;
   topic?: string;
   explanation?: string;
+  image?: string;
   imageUrl?: string;
   imageCaption?: string;
   imageWidth?: number;
+  pdfSliceUrl?: string;
+  stemSliceUrl?: string;
+  sourceCropBox?: PdfQuestionCropBox;
+  displayMode?: QuestionDisplayMode;
 }
 
 export interface Part2Item {
@@ -31,9 +47,14 @@ export interface Part2Question {
   items: Part2Item[];
   level: CognitiveLevel;
   topic?: string;
+  image?: string;
   imageUrl?: string;
   imageCaption?: string;
   imageWidth?: number;
+  pdfSliceUrl?: string;
+  stemSliceUrl?: string;
+  sourceCropBox?: PdfQuestionCropBox;
+  displayMode?: QuestionDisplayMode;
 }
 
 export interface Part3Question {
@@ -44,9 +65,14 @@ export interface Part3Question {
   level: CognitiveLevel;
   topic?: string;
   explanation?: string;
+  image?: string;
   imageUrl?: string;
   imageCaption?: string;
   imageWidth?: number;
+  pdfSliceUrl?: string;
+  stemSliceUrl?: string;
+  sourceCropBox?: PdfQuestionCropBox;
+  displayMode?: QuestionDisplayMode;
 }
 
 export interface EssayQuestion {
@@ -56,9 +82,14 @@ export interface EssayQuestion {
   guide: string;
   level?: CognitiveLevel;
   topic?: string;
+  image?: string;
   imageUrl?: string;
   imageCaption?: string;
   imageWidth?: number;
+  pdfSliceUrl?: string;
+  stemSliceUrl?: string;
+  sourceCropBox?: PdfQuestionCropBox;
+  displayMode?: QuestionDisplayMode;
 }
 
 export interface MatrixRow {
@@ -107,6 +138,7 @@ export interface ExamMetadata {
   durationMinutes: number;
   examCode: string;
   dateStr?: string;
+  defaultDisplayMode?: QuestionDisplayMode;
 }
 
 export interface ExamData {

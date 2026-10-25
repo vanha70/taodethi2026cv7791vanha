@@ -31,10 +31,27 @@ service cloud.firestore {
       allow list: if true;
 
       allow create: if isValidId(roomCode) && isValidRoom(request.resource.data);
-      allow update: if isValidId(roomCode) &&
-                       isValidRoom(request.resource.data) &&
-                       request.resource.data.roomCode == resource.data.roomCode;
+      allow update: if isValidId(roomCode) && isValidRoom(request.resource.data);
       allow delete: if isValidId(roomCode);
+
+      match /chunks/{chunkId} {
+        allow get, list: if isValidId(roomCode);
+        allow create, update, delete: if isValidId(roomCode) && isValidId(chunkId);
+      }
+
+      match /question_chunks/{chunkId} {
+        allow get, list: if isValidId(roomCode);
+        allow create, update, delete: if isValidId(roomCode) && isValidId(chunkId);
+      }
+
+      match /submissions/{submissionId} {
+        allow get: if isValidId(roomCode) && isValidId(submissionId);
+        allow list: if isValidId(roomCode);
+        allow create: if isValidId(roomCode) &&
+                         isValidId(submissionId) &&
+                         isValidSubmission(request.resource.data);
+        allow update, delete: if false;
+      }
     }
 
     // Standardized Exam Submissions collection: exam_submissions/{roomCode}/students/{submissionId}
@@ -59,10 +76,18 @@ service cloud.firestore {
       allow list: if true;
 
       allow create: if isValidId(examId) && isValidRoom(request.resource.data);
-      allow update: if isValidId(examId) &&
-                       isValidRoom(request.resource.data) &&
-                       request.resource.data.roomCode == resource.data.roomCode;
+      allow update: if isValidId(examId) && isValidRoom(request.resource.data);
       allow delete: if isValidId(examId);
+
+      match /chunks/{chunkId} {
+        allow get, list: if isValidId(examId);
+        allow create, update, delete: if isValidId(examId) && isValidId(chunkId);
+      }
+
+      match /question_chunks/{chunkId} {
+        allow get, list: if isValidId(examId);
+        allow create, update, delete: if isValidId(examId) && isValidId(chunkId);
+      }
 
       match /submissions/{submissionId} {
         allow get: if isValidId(examId) && isValidId(submissionId);
@@ -83,10 +108,18 @@ service cloud.firestore {
 
       // Teachers can create and update room status
       allow create: if isValidId(roomId) && isValidRoom(request.resource.data);
-      allow update: if isValidId(roomId) &&
-                       isValidRoom(request.resource.data) &&
-                       request.resource.data.roomCode == resource.data.roomCode;
+      allow update: if isValidId(roomId) && isValidRoom(request.resource.data);
       allow delete: if isValidId(roomId);
+
+      match /chunks/{chunkId} {
+        allow get, list: if isValidId(roomId);
+        allow create, update, delete: if isValidId(roomId) && isValidId(chunkId);
+      }
+
+      match /question_chunks/{chunkId} {
+        allow get, list: if isValidId(roomId);
+        allow create, update, delete: if isValidId(roomId) && isValidId(chunkId);
+      }
 
       // Submissions subcollection
       match /submissions/{submissionId} {

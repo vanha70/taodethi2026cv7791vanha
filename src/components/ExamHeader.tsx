@@ -28,6 +28,7 @@ interface ExamHeaderProps {
   lastSavedTime?: string;
   isSaving?: boolean;
   onOpenShortcutsModal: () => void;
+  onOpenCloudConfigModal?: () => void;
 }
 
 export const ExamHeader: React.FC<ExamHeaderProps> = ({
@@ -45,6 +46,7 @@ export const ExamHeader: React.FC<ExamHeaderProps> = ({
   lastSavedTime,
   isSaving = false,
   onOpenShortcutsModal,
+  onOpenCloudConfigModal,
 }) => {
   return (
     <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-xs print:hidden">
@@ -104,6 +106,17 @@ export const ExamHeader: React.FC<ExamHeaderProps> = ({
 
           {/* Quick Actions Bar */}
           <div className="flex items-center space-x-2">
+            {/* Dual Cloud Config Button */}
+            {onOpenCloudConfigModal && (
+              <button
+                onClick={onOpenCloudConfigModal}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-indigo-800 hover:text-indigo-950 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition-colors cursor-pointer"
+                title="⚙️ Cấu hình Cloud Kép: Firebase & Google Sheets + Google Drive"
+              >
+                <span>⚙️ Cấu hình Cloud</span>
+              </button>
+            )}
+
             {/* Keyboard Shortcuts Trigger Button */}
             <button
               onClick={onOpenShortcutsModal}
@@ -232,7 +245,7 @@ export const ExamHeader: React.FC<ExamHeaderProps> = ({
             }`}
           >
             <Users className="w-4 h-4 text-amber-300" />
-            <span>Phòng Thi & Quản Lý Học Sinh (Firebase)</span>
+            <span>Phòng Thi &amp; Quản Lý Học Sinh (Dual Cloud)</span>
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
           </button>
 

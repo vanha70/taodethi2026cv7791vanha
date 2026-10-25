@@ -21,6 +21,11 @@ import {
   BookOpen,
   Clock,
   GraduationCap,
+  Loader2,
+  Settings,
+  Database,
+  Cloud,
+  RefreshCw,
 } from 'lucide-react';
 import { ExamData } from '../types/exam';
 import {
@@ -40,11 +45,17 @@ import {
   getResolvedPublicAppUrl,
   savePublicAppUrlSetting,
   loadPublicAppUrlSetting,
+  loadGoogleAppsScriptUrlSetting,
+  getConfiguredGoogleAppsScriptUrl,
+  saveExamToGoogleSheetsAndDrive,
   buildStudentRoomLink,
   formatStudentFullName,
+  formatFirebasePublishError,
+  loadRoomFromLocalBackup,
   PUBLIC_APP_URL_STORAGE_KEY,
 } from '../services/roomService';
 import { copyTextToClipboard, safeLocalStorage } from '../utils/browserSafeguards';
+import { DualCloudConfigModal } from './DualCloudConfigModal';
 
 interface OnlineRoomManagerProps {
   currentExam: ExamData;
@@ -81,6 +92,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
   const [activeRoom, setActiveRoom] = useState<ExamRoomDoc | null>(null);
   const [submissions, setSubmissions] = useState<StudentSubmissionDoc[]>([]);
   const [isCreating, setIsCreating] = useState<boolean>(false);
+  const [publishProgressMsg, setPublishProgressMsg] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [publishSuccessBanner, setPublishSuccessBanner] = useState<string | null>(null);
 
@@ -109,6 +121,11 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
   const [qrModalRoom, setQrModalRoom] = useState<ExamRoomDoc | null>(null);
   const [selectedStudentDetail, setSelectedStudentDetail] = useState<StudentSubmissionDoc | null>(
     null
+  );
+  const [isCloudConfigModalOpen, setIsCloudConfigModalOpen] = useState<boolean>(false);
+  const [syncingGoogleRoomCode, setSyncingGoogleRoomCode] = useState<string | null>(null);
+  const [hasAppsScriptConfigured, setHasAppsScriptConfigured] = useState<boolean>(() =>
+    Boolean(getConfiguredGoogleAppsScriptUrl())
   );
 
   // Public App URL configuration state (empty = use exact window.location.origin + window.location.pathname)
@@ -234,13 +251,22 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
     setFormError(null);
   };
 
-  // Load saved custom Public App URL from Firebase settings (`settings/publicConfig`) on mount
+  // Load saved custom Public App URL and Google Apps Script Web App URL from Firebase settings (`settings/publicConfig`) on mount
   useEffect(() => {
     let mounted = true;
     loadPublicAppUrlSetting()
       .then((customSavedUrl) => {
         if (mounted) {
           setPublicAppUrlInput(customSavedUrl || '');
+        }
+      })
+      .catch(() => {
+        // fallback already handled
+      });
+    loadGoogleAppsScriptUrlSetting()
+      .then((savedScriptUrl) => {
+        if (mounted) {
+          setHasAppsScriptConfigured(Boolean(savedScriptUrl));
         }
       })
       .catch(() => {
@@ -350,6 +376,8 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
     try {
       setIsCreating(true);
       setFormError(null);
+      setPublishSuccessBanner(null);
+      setPublishProgressMsg('Đang chuẩn bị dữ liệu & nén ảnh câu hỏi (WebP 65% / JPEG 70%)...');
 
       const cleanClass = targetClass.trim();
       const cleanTitle = roomTitle.trim();
@@ -373,18 +401,86 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
         'Thầy: Nguyễn Văn Hà (0766.649.979)',
         allowReview,
         cleanCode,
-        cleanClass
+        cleanClass,
+        (stepMsg) => setPublishProgressMsg(stepMsg)
       );
 
       setActiveRoom(newRoom);
+      const chunkNote =
+        newRoom.chunkCount && newRoom.chunkCount > 0
+          ? ` (Đã nén ảnh WebP 65% & chia thành ${newRoom.chunkCount} gói chunks an toàn < 450KB/gói)`
+          : '';
+      const cloudStatusParts: string[] = [];
+      if (newRoom.savedFirebase !== false) {
+        cloudStatusParts.push('✅ Đã lưu Firebase');
+      }
+      if (newRoom.savedGoogleSheets) {
+        cloudStatusParts.push('✅ Đã lưu Google Drive/Sheets');
+      }
+      const dualBadgeStr =
+        cloudStatusParts.length > 0 ? ` [${cloudStatusParts.join(' • ')}]` : '';
       setPublishSuccessBanner(
-        `Đã xuất bản đề thi lên Firebase Firestore (exam_rooms/${newRoom.roomCode}) thành công! Mã phòng 4 số: ${newRoom.roomCode} • Lớp: ${cleanClass}`
+        `Đã xuất bản đề thi Mã phòng ${newRoom.roomCode} thành công${dualBadgeStr}${chunkNote}! Lớp: ${cleanClass}`
       );
-    } catch (err) {
-      console.error(err);
-      setFormError('Lỗi khi xuất bản đề thi lên Firebase. Vui lòng thử lại!');
+    } catch (err: any) {
+      console.error('Publish exam room error:', err);
+      const friendlyErr = formatFirebasePublishError(err);
+      setFormError(friendlyErr);
+      // Even if remote Firestore threw an error, restore the local backup room so teacher can still test/share immediately
+      const backupRoom = loadRoomFromLocalBackup(cleanCode);
+      if (backupRoom) {
+        setActiveRoom(backupRoom);
+      }
     } finally {
       setIsCreating(false);
+      setPublishProgressMsg(null);
+    }
+  };
+
+  // Manually sync an existing room to Google Drive & Google Sheets
+  const handleSyncRoomToGoogleDrive = async (room: ExamRoomDoc) => {
+    const scriptUrl = getConfiguredGoogleAppsScriptUrl();
+    if (!scriptUrl) {
+      setIsCloudConfigModalOpen(true);
+      return;
+    }
+    try {
+      setSyncingGoogleRoomCode(room.roomCode);
+      const fullRoom = (await findRoomByCode(room.roomCode)) || room;
+      const res = await saveExamToGoogleSheetsAndDrive(fullRoom, scriptUrl);
+      if (res.ok) {
+        setPublishedExams((prev) =>
+          prev.map((r) =>
+            r.roomCode === room.roomCode
+              ? {
+                  ...r,
+                  savedGoogleSheets: true,
+                  googleDriveFileId: res.fileId || r.googleDriveFileId,
+                  googleDriveFileUrl: res.fileUrl || r.googleDriveFileUrl,
+                }
+              : r
+          )
+        );
+        if (activeRoom?.roomCode === room.roomCode) {
+          setActiveRoom((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  savedGoogleSheets: true,
+                  googleDriveFileId: res.fileId || prev.googleDriveFileId,
+                  googleDriveFileUrl: res.fileUrl || prev.googleDriveFileUrl,
+                }
+              : prev
+          );
+        }
+        setPublishSuccessBanner(
+          `✅ Đã đồng bộ đề thi Mã phòng ${room.roomCode} lên Google Drive (Exam_${room.roomCode}.json) & Google Sheets!`
+        );
+      } else {
+        setFormError(res.message);
+      }
+    } finally {
+      setSyncingGoogleRoomCode(null);
     }
   };
 
@@ -550,12 +646,24 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
             </button>
           </div>
 
-          <div className="text-xs text-slate-500 flex items-center gap-2 bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded-lg border border-emerald-200">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span>
-              Đồng bộ trực tiếp <code className="font-mono font-bold">exam_rooms</code> &amp;{' '}
-              <code className="font-mono font-bold">exam_submissions</code> trên Firebase
-            </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="text-xs text-slate-500 flex items-center gap-2 bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded-lg border border-emerald-200">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span>
+                Dual Cloud Sync: <code className="font-mono font-bold">Firebase</code> +{' '}
+                <code className="font-mono font-bold">Google Sheets &amp; Drive</code>
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsCloudConfigModalOpen(true)}
+              className="px-3.5 py-2 rounded-lg text-xs font-extrabold bg-gradient-to-r from-indigo-900 via-indigo-800 to-emerald-800 hover:from-indigo-950 hover:to-emerald-900 text-white shadow-xs flex items-center gap-1.5 cursor-pointer transition-all"
+              title="Thiết lập cấu hình Cloud Kép: Firebase & Google Sheets + Google Drive"
+            >
+              <Settings className="w-3.5 h-3.5 text-amber-300" />
+              <span>⚙️ Cấu hình Cloud: Firebase &amp; Google Sheets</span>
+            </button>
           </div>
         </div>
       )}
@@ -585,24 +693,40 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-7">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4">
               <div>
-                <span className="text-[11px] font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-md border border-indigo-200 uppercase">
-                  CẤU HÌNH BẮT BUỘC TRƯỚC KHI XUẤT BẢN ĐỀ THI
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-md border border-indigo-200 uppercase">
+                    CẤU HÌNH BẮT BUỘC TRƯỚC KHI XUẤT BẢN ĐỀ THI (DUAL CLOUD SYNC)
+                  </span>
+                  <span className="text-[11px] font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200">
+                    Lưu song song Firebase + Google Sheets &amp; Drive
+                  </span>
+                </div>
                 <h3 className="text-lg sm:text-xl font-bold text-slate-900 mt-2">
-                  Thiết lập Mã Đề / Mã Phòng (4 Chữ Số), Lớp & Xuất Bản Firebase
+                  Thiết lập Mã Đề / Mã Phòng (4 Chữ Số), Lớp &amp; Xuất Bản Đám Mây Kép
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Lưu toàn bộ 3 phần câu hỏi ({currentExam.part1.length} câu P.I • {currentExam.part2.length} câu P.II • {currentExam.part3.length} câu P.III), đáp án ẩn, hình vẽ Base64 và công thức KaTeX lên collection <code className="font-mono font-bold text-indigo-700">exams</code> với khóa chính (Document ID) là Mã phòng 4 số.
+                  Lưu đồng thời toàn bộ 3 phần câu hỏi ({currentExam.part1.length} câu P.I • {currentExam.part2.length} câu P.II • {currentExam.part3.length} câu P.III), đáp án ẩn, hình vẽ minh họa và công thức KaTeX lên <code className="font-mono font-bold text-indigo-700">Firebase (exam_rooms/&#123;roomCode&#125;)</code> VÀ <code className="font-mono font-bold text-emerald-700">Google Drive (Exam_&#123;roomCode&#125;.json) + Google Sheets</code>.
                 </p>
               </div>
 
-              <div className="flex items-center gap-2 bg-slate-50 px-3.5 py-2 rounded-xl border border-slate-200 text-xs">
-                <BookOpen className="w-4 h-4 text-indigo-600" />
-                <span className="font-semibold text-slate-700">Đề hiện tại:</span>
-                <span className="font-bold text-indigo-700">
-                  {currentExam.part1.length + currentExam.part2.length + currentExam.part3.length}{' '}
-                  câu (10,0 điểm)
-                </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsCloudConfigModalOpen(true)}
+                  className="px-3 py-2 rounded-xl text-xs font-bold bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 flex items-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <Cloud className="w-4 h-4 text-indigo-600" />
+                  <span>⚙️ Cấu hình Cloud Kép</span>
+                </button>
+
+                <div className="flex items-center gap-2 bg-slate-50 px-3.5 py-2 rounded-xl border border-slate-200 text-xs">
+                  <BookOpen className="w-4 h-4 text-indigo-600" />
+                  <span className="font-semibold text-slate-700">Đề hiện tại:</span>
+                  <span className="font-bold text-indigo-700">
+                    {currentExam.part1.length + currentExam.part2.length + currentExam.part3.length}{' '}
+                    câu (10,0 điểm)
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -764,24 +888,36 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
             </div>
 
             <div className="mt-5 pt-4 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
-              <div className="text-xs text-slate-600">
-                Link phòng thi sẽ tự động tạo dạng:{' '}
-                <code className="font-mono font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded">
-                  {getDirectRoomUrl(isCodeFormatValid ? examCodeInput : '1003')}
-                </code>
+              <div className="text-xs text-slate-600 space-y-1">
+                <div>
+                  Link phòng thi sẽ tự động tạo dạng:{' '}
+                  <code className="font-mono font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded">
+                    {getDirectRoomUrl(isCodeFormatValid ? examCodeInput : '1003')}
+                  </code>
+                </div>
+                {isCreating && publishProgressMsg && (
+                  <div className="text-indigo-700 font-bold flex items-center gap-1.5">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
+                    <span>{publishProgressMsg}</span>
+                  </div>
+                )}
               </div>
 
               <button
                 type="button"
                 onClick={handleCreateRoom}
                 disabled={isCreating}
-                className="px-6 py-3 rounded-xl font-bold text-xs sm:text-sm bg-gradient-to-r from-indigo-600 via-indigo-700 to-sky-600 hover:from-indigo-700 hover:to-sky-700 text-white shadow-md shadow-indigo-200 cursor-pointer transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+                className="px-6 py-3 rounded-xl font-bold text-xs sm:text-sm bg-gradient-to-r from-indigo-600 via-indigo-700 to-emerald-600 hover:from-indigo-700 hover:to-emerald-700 text-white shadow-md shadow-indigo-200 cursor-pointer transition-all flex items-center justify-center gap-2 disabled:opacity-60"
               >
-                <Sparkles className="w-4 h-4 text-amber-300" />
+                {isCreating ? (
+                  <Loader2 className="w-4 h-4 text-amber-300 animate-spin" />
+                ) : (
+                  <Sparkles className="w-4 h-4 text-amber-300" />
+                )}
                 <span>
                   {isCreating
-                    ? 'Đang xuất bản & lưu lên Firebase...'
-                    : `Xuất bản & Lưu Firebase (Mã Phòng: ${examCodeInput || '----'})`}
+                    ? publishProgressMsg || 'Đang xuất bản & lưu song song lên Cloud...'
+                    : `Xuất bản & Lưu Cloud Kép (Mã Phòng: ${examCodeInput || '----'})`}
                 </span>
               </button>
             </div>
@@ -823,6 +959,36 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                         <Clock className="w-3.5 h-3.5" />
                         {activeRoom.durationMinutes} phút
                       </span>
+
+                      {activeRoom.savedFirebase !== false && (
+                        <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-indigo-500/30 text-indigo-100 border border-indigo-400/40">
+                          ✅ Đã lưu Firebase
+                        </span>
+                      )}
+
+                      {activeRoom.savedGoogleSheets ? (
+                        <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/30 text-emerald-200 border border-emerald-400/40">
+                          ✅ Đã lưu Google Drive/Sheets
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleSyncRoomToGoogleDrive(activeRoom)}
+                          disabled={syncingGoogleRoomCode === activeRoom.roomCode}
+                          className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-white/10 hover:bg-white/20 text-amber-200 border border-amber-400/30 cursor-pointer flex items-center gap-1"
+                        >
+                          <RefreshCw
+                            className={`w-3 h-3 ${
+                              syncingGoogleRoomCode === activeRoom.roomCode ? 'animate-spin' : ''
+                            }`}
+                          />
+                          <span>
+                            {hasAppsScriptConfigured
+                              ? 'Đồng bộ sang Google Drive/Sheets'
+                              : 'Cấu hình Google Drive/Sheets'}
+                          </span>
+                        </button>
+                      )}
                     </div>
 
                     <h2 className="text-xl sm:text-2xl font-black tracking-tight">
@@ -1222,9 +1388,10 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                   const isSelected = activeRoom?.roomCode === room.roomCode;
                   const assignedClass = room.targetClass || room.grade || 'Khối 12';
                   const qCount =
+                    room.totalQuestions ||
                     (room.examData?.part1?.length || 0) +
-                    (room.examData?.part2?.length || 0) +
-                    (room.examData?.part3?.length || 0);
+                      (room.examData?.part2?.length || 0) +
+                      (room.examData?.part3?.length || 0);
                   const roomStats = roomSubmissionStats[room.roomCode] || {
                     count: 0,
                     avgScore: '0.00',
@@ -1271,6 +1438,41 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                           <h4 className="text-sm sm:text-base font-bold text-slate-900 leading-snug">
                             {room.title}
                           </h4>
+
+                          {/* DUAL CLOUD SAVE STATUS BADGES */}
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {room.savedFirebase !== false && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-50 text-indigo-800 border border-indigo-200">
+                                <span>✅ Đã lưu Firebase</span>
+                              </span>
+                            )}
+                            {room.savedGoogleSheets ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                <span>✅ Đã lưu Google Drive/Sheets</span>
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleSyncRoomToGoogleDrive(room)}
+                                disabled={syncingGoogleRoomCode === room.roomCode}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 cursor-pointer transition-colors"
+                                title="Đồng bộ đề thi này lên Google Drive & Google Sheets"
+                              >
+                                <RefreshCw
+                                  className={`w-3 h-3 ${
+                                    syncingGoogleRoomCode === room.roomCode ? 'animate-spin' : ''
+                                  }`}
+                                />
+                                <span>
+                                  {syncingGoogleRoomCode === room.roomCode
+                                    ? 'Đang lưu Google Drive...'
+                                    : hasAppsScriptConfigured
+                                    ? 'Lưu thêm lên Google Drive/Sheets'
+                                    : 'Cấu hình Google Drive/Sheets'}
+                                </span>
+                              </button>
+                            )}
+                          </div>
 
                           {/* Live Submission Stats Bar per Room Code */}
                           <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold bg-slate-100 text-slate-800 px-2.5 py-1 rounded-lg border border-slate-200">
@@ -1399,7 +1601,13 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
 
                           <button
                             type="button"
-                            onClick={() => setActiveRoom(room)}
+                            onClick={async () => {
+                              setActiveRoom(room);
+                              const fullRoom = await findRoomByCode(room.roomCode);
+                              if (fullRoom) {
+                                setActiveRoom(fullRoom);
+                              }
+                            }}
                             className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
                               isSelected
                                 ? 'bg-indigo-600 text-white'
@@ -1841,6 +2049,17 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
           </div>
         </div>
       )}
+
+      {/* =====================================================================
+          MODAL: DUAL CLOUD SYNC CONFIGURATION (FIREBASE & GOOGLE SHEETS/DRIVE)
+          ===================================================================== */}
+      <DualCloudConfigModal
+        isOpen={isCloudConfigModalOpen}
+        onClose={() => setIsCloudConfigModalOpen(false)}
+        onConfigUpdated={() => {
+          setHasAppsScriptConfigured(Boolean(getConfiguredGoogleAppsScriptUrl()));
+        }}
+      />
     </div>
   );
 };

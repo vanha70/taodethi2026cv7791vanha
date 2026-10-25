@@ -98,12 +98,12 @@ export const OfficialExamPreview: React.FC<OfficialExamPreviewProps> = ({
                   </p>
 
                   {/* Chemistry Diagram / Image */}
-                  {q.imageUrl && (
+                  {(q.image || q.imageUrl) && (
                     <div className="exam-diagram-wrapper my-2 text-center max-w-full overflow-x-auto">
                       <img
-                        src={q.imageUrl}
+                        src={q.image || q.imageUrl}
                         alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
-                        className="exam-diagram-img max-w-full h-auto max-h-52 mx-auto object-contain rounded border border-slate-200"
+                        className="exam-diagram-img my-3 max-h-80 w-auto mx-auto rounded border border-slate-200 shadow-sm object-contain bg-white p-1"
                       />
                       {q.imageCaption && (
                         <p className="text-xs italic text-slate-700 mt-1 font-serif">
@@ -158,12 +158,12 @@ export const OfficialExamPreview: React.FC<OfficialExamPreviewProps> = ({
                   </p>
 
                   {/* Chemistry Diagram / Image */}
-                  {q.imageUrl && (
+                  {(q.image || q.imageUrl) && (
                     <div className="exam-diagram-wrapper my-2 text-center max-w-full overflow-x-auto">
                       <img
-                        src={q.imageUrl}
+                        src={q.image || q.imageUrl}
                         alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
-                        className="exam-diagram-img max-w-full h-auto max-h-52 mx-auto object-contain rounded border border-slate-200"
+                        className="exam-diagram-img my-3 max-h-80 w-auto mx-auto rounded border border-slate-200 shadow-sm object-contain bg-white p-1"
                       />
                       {q.imageCaption && (
                         <p className="text-xs italic text-slate-700 mt-1 font-serif">
@@ -208,12 +208,12 @@ export const OfficialExamPreview: React.FC<OfficialExamPreviewProps> = ({
                   </p>
 
                   {/* Chemistry Diagram / Image */}
-                  {q.imageUrl && (
+                  {(q.image || q.imageUrl) && (
                     <div className="exam-diagram-wrapper my-2 text-center max-w-full overflow-x-auto">
                       <img
-                        src={q.imageUrl}
+                        src={q.image || q.imageUrl}
                         alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
-                        className="exam-diagram-img max-w-full h-auto max-h-52 mx-auto object-contain rounded border border-slate-200"
+                        className="exam-diagram-img my-3 max-h-80 w-auto mx-auto rounded border border-slate-200 shadow-sm object-contain bg-white p-1"
                       />
                       {q.imageCaption && (
                         <p className="text-xs italic text-slate-700 mt-1 font-serif">
@@ -248,12 +248,12 @@ export const OfficialExamPreview: React.FC<OfficialExamPreviewProps> = ({
                   </p>
 
                   {/* Chemistry Diagram / Image */}
-                  {q.imageUrl && (
+                  {(q.image || q.imageUrl) && (
                     <div className="exam-diagram-wrapper my-2 text-center max-w-full overflow-x-auto">
                       <img
-                        src={q.imageUrl}
+                        src={q.image || q.imageUrl}
                         alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
-                        className="exam-diagram-img max-w-full h-auto max-h-52 mx-auto object-contain rounded border border-slate-200"
+                        className="exam-diagram-img my-3 max-h-80 w-auto mx-auto rounded border border-slate-200 shadow-sm object-contain bg-white p-1"
                       />
                       {q.imageCaption && (
                         <p className="text-xs italic text-slate-700 mt-1 font-serif">

@@ -166,6 +166,28 @@ const QuestionImageBlock: React.FC<QuestionImageBlockProps> = ({
         }`}
       >
         <div className="flex items-center gap-2 flex-wrap">
+          {/* Primary '🖼️ Thêm/Đổi ảnh minh họa' button */}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition-colors cursor-pointer shadow-2xs"
+            title="Chọn ảnh từ máy hoặc nhấn Ctrl+V để dán ảnh minh họa vào câu hỏi"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            <span>🖼️ Thêm/Đổi ảnh minh họa</span>
+          </button>
+
+          {/* Quick Paste from Clipboard (Ctrl+V) button */}
+          <button
+            type="button"
+            onClick={onManualPasteClick}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-semibold transition-colors cursor-pointer shadow-2xs"
+            title="Dán hình ảnh từ clipboard vừa sao chép hoặc chụp màn hình (Ctrl+V)"
+          >
+            <Clipboard className="w-3.5 h-3.5 text-indigo-600" />
+            <span>📋 Dán ảnh (Ctrl+V)</span>
+          </button>
+
           <button
             type="button"
             onClick={onOpenDraw}
@@ -183,30 +205,9 @@ const QuestionImageBlock: React.FC<QuestionImageBlockProps> = ({
             title="Tạo sơ đồ chuyển hóa & chuỗi phản ứng hóa học (ReactionBuilder)"
           >
             <Zap className="w-3.5 h-3.5" />
-            <span>⚡ Sơ đồ phản ứng (ReactionBuilder)</span>
+            <span>⚡ Sơ đồ phản ứng</span>
           </button>
 
-          {/* Quick Paste from Clipboard (Ctrl+V) button */}
-          <button
-            type="button"
-            onClick={onManualPasteClick}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-semibold transition-colors cursor-pointer shadow-2xs"
-            title="Dán hình ảnh từ clipboard vừa sao chép hoặc chụp màn hình (Ctrl+V)"
-          >
-            <Clipboard className="w-3.5 h-3.5 text-indigo-600" />
-            <span>📋 Dán ảnh (Ctrl+V)</span>
-          </button>
-
-          {/* Upload file button */}
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-medium transition-colors cursor-pointer"
-            title="Tải ảnh từ máy tính (PNG, JPG, WEBP)"
-          >
-            <Upload className="w-3.5 h-3.5 text-slate-500" />
-            <span>Tải ảnh từ máy</span>
-          </button>
           <input
             ref={fileInputRef}
             type="file"
@@ -244,12 +245,12 @@ const QuestionImageBlock: React.FC<QuestionImageBlockProps> = ({
           : 'bg-slate-50/80 border-slate-200 shadow-2xs'
       }`}
     >
-      <div className="flex flex-col sm:flex-row items-center gap-4">
-        <div className="relative group shrink-0">
+      <div className="flex flex-col items-center gap-3">
+        <div className="w-full text-center">
           <img
             src={imageUrl}
             alt={imageCaption || `Hình Câu ${questionNumber}`}
-            className="max-h-44 max-w-[260px] object-contain rounded-lg border border-slate-300 bg-white p-1 shadow-2xs"
+            className="my-3 max-h-80 w-auto mx-auto rounded border border-slate-200 shadow-sm object-contain bg-white p-1"
           />
         </div>
         <div className="flex-1 space-y-2 w-full">
@@ -275,6 +276,21 @@ const QuestionImageBlock: React.FC<QuestionImageBlockProps> = ({
             <div className="flex items-center gap-2 pt-1 flex-wrap">
               <button
                 type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="px-2.5 py-1 text-xs font-bold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 flex items-center gap-1 cursor-pointer shadow-2xs"
+              >
+                <Upload className="w-3 h-3" /> 🖼️ Thêm/Đổi ảnh minh họa
+              </button>
+              <button
+                type="button"
+                onClick={onManualPasteClick}
+                className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 flex items-center gap-1 cursor-pointer transition-colors"
+                title="Dán đè ảnh mới từ clipboard (Ctrl+V)"
+              >
+                <Clipboard className="w-3.5 h-3.5" /> Dán đè (Ctrl+V)
+              </button>
+              <button
+                type="button"
                 onClick={onOpenDraw}
                 className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-sky-50 text-sky-700 hover:bg-sky-100 border border-sky-200 flex items-center gap-1 cursor-pointer transition-colors"
               >
@@ -287,21 +303,6 @@ const QuestionImageBlock: React.FC<QuestionImageBlockProps> = ({
                 title="Mở ReactionBuilder để vẽ sơ đồ chuỗi phản ứng"
               >
                 <Zap className="w-3.5 h-3.5 text-teal-600" /> Sơ đồ phản ứng
-              </button>
-              <button
-                type="button"
-                onClick={onManualPasteClick}
-                className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 flex items-center gap-1 cursor-pointer transition-colors"
-                title="Dán đè ảnh mới từ clipboard (Ctrl+V)"
-              >
-                <Clipboard className="w-3.5 h-3.5" /> Dán đè (Ctrl+V)
-              </button>
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="px-2 py-1 text-xs font-medium rounded-lg bg-white text-slate-700 hover:bg-slate-100 border border-slate-200 flex items-center gap-1 cursor-pointer"
-              >
-                <Upload className="w-3 h-3 text-slate-500" /> Đổi ảnh từ máy
               </button>
               <input
                 ref={fileInputRef}
@@ -607,25 +608,45 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
     if (part === '1') {
       const updated = [...part1];
       if (index < updated.length) {
-        updated[index] = { ...updated[index], imageUrl: imageDataUrl, imageCaption: captionText };
+        updated[index] = {
+          ...updated[index],
+          image: imageDataUrl,
+          imageUrl: imageDataUrl,
+          imageCaption: captionText,
+        };
         onUpdatePart1(updated);
       }
     } else if (part === '2') {
       const updated = [...part2];
       if (index < updated.length) {
-        updated[index] = { ...updated[index], imageUrl: imageDataUrl, imageCaption: captionText };
+        updated[index] = {
+          ...updated[index],
+          image: imageDataUrl,
+          imageUrl: imageDataUrl,
+          imageCaption: captionText,
+        };
         onUpdatePart2(updated);
       }
     } else if (part === '3') {
       const updated = [...part3];
       if (index < updated.length) {
-        updated[index] = { ...updated[index], imageUrl: imageDataUrl, imageCaption: captionText };
+        updated[index] = {
+          ...updated[index],
+          image: imageDataUrl,
+          imageUrl: imageDataUrl,
+          imageCaption: captionText,
+        };
         onUpdatePart3(updated);
       }
     } else if (part === 'essay') {
       const updated = [...essay];
       if (index < updated.length) {
-        updated[index] = { ...updated[index], imageUrl: imageDataUrl, imageCaption: captionText };
+        updated[index] = {
+          ...updated[index],
+          image: imageDataUrl,
+          imageUrl: imageDataUrl,
+          imageCaption: captionText,
+        };
         onUpdateEssay(updated);
       }
     }
@@ -637,19 +658,39 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
     const { part, index } = currentDrawTarget;
     if (part === '1') {
       const updated = [...part1];
-      updated[index] = { ...updated[index], imageUrl: imageDataUrl, imageCaption: captionText };
+      updated[index] = {
+        ...updated[index],
+        image: imageDataUrl,
+        imageUrl: imageDataUrl,
+        imageCaption: captionText,
+      };
       onUpdatePart1(updated);
     } else if (part === '2') {
       const updated = [...part2];
-      updated[index] = { ...updated[index], imageUrl: imageDataUrl, imageCaption: captionText };
+      updated[index] = {
+        ...updated[index],
+        image: imageDataUrl,
+        imageUrl: imageDataUrl,
+        imageCaption: captionText,
+      };
       onUpdatePart2(updated);
     } else if (part === '3') {
       const updated = [...part3];
-      updated[index] = { ...updated[index], imageUrl: imageDataUrl, imageCaption: captionText };
+      updated[index] = {
+        ...updated[index],
+        image: imageDataUrl,
+        imageUrl: imageDataUrl,
+        imageCaption: captionText,
+      };
       onUpdatePart3(updated);
     } else if (part === 'essay') {
       const updated = [...essay];
-      updated[index] = { ...updated[index], imageUrl: imageDataUrl, imageCaption: captionText };
+      updated[index] = {
+        ...updated[index],
+        image: imageDataUrl,
+        imageUrl: imageDataUrl,
+        imageCaption: captionText,
+      };
       onUpdateEssay(updated);
     }
   };
@@ -657,19 +698,39 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
   const handleRemoveQuestionImage = (part: '1' | '2' | '3' | 'essay', index: number) => {
     if (part === '1') {
       const updated = [...part1];
-      updated[index] = { ...updated[index], imageUrl: undefined, imageCaption: undefined };
+      updated[index] = {
+        ...updated[index],
+        image: undefined,
+        imageUrl: undefined,
+        imageCaption: undefined,
+      };
       onUpdatePart1(updated);
     } else if (part === '2') {
       const updated = [...part2];
-      updated[index] = { ...updated[index], imageUrl: undefined, imageCaption: undefined };
+      updated[index] = {
+        ...updated[index],
+        image: undefined,
+        imageUrl: undefined,
+        imageCaption: undefined,
+      };
       onUpdatePart2(updated);
     } else if (part === '3') {
       const updated = [...part3];
-      updated[index] = { ...updated[index], imageUrl: undefined, imageCaption: undefined };
+      updated[index] = {
+        ...updated[index],
+        image: undefined,
+        imageUrl: undefined,
+        imageCaption: undefined,
+      };
       onUpdatePart3(updated);
     } else if (part === 'essay') {
       const updated = [...essay];
-      updated[index] = { ...updated[index], imageUrl: undefined, imageCaption: undefined };
+      updated[index] = {
+        ...updated[index],
+        image: undefined,
+        imageUrl: undefined,
+        imageCaption: undefined,
+      };
       onUpdateEssay(updated);
     }
   };
@@ -713,6 +774,7 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
         if (index < updated.length) {
           updated[index] = {
             ...updated[index],
+            image: base64Data,
             imageUrl: base64Data,
             imageCaption: updated[index].imageCaption || defaultCaption,
           };
@@ -723,6 +785,7 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
         if (index < updated.length) {
           updated[index] = {
             ...updated[index],
+            image: base64Data,
             imageUrl: base64Data,
             imageCaption: updated[index].imageCaption || defaultCaption,
           };
@@ -733,6 +796,7 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
         if (index < updated.length) {
           updated[index] = {
             ...updated[index],
+            image: base64Data,
             imageUrl: base64Data,
             imageCaption: updated[index].imageCaption || defaultCaption,
           };
@@ -743,6 +807,7 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
         if (index < updated.length) {
           updated[index] = {
             ...updated[index],
+            image: base64Data,
             imageUrl: base64Data,
             imageCaption: updated[index].imageCaption || defaultCaption,
           };
@@ -1995,7 +2060,7 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
 
                     {/* Question Image Attachment & Dropzone */}
                     <QuestionImageBlock
-                      imageUrl={q.imageUrl}
+                      imageUrl={q.image || q.imageUrl}
                       imageCaption={q.imageCaption}
                       questionNumber={idx + 1}
                       previewMode={previewMode}
@@ -2003,7 +2068,7 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
                       onDropApparatus={(e) => handleDropApparatus(e, '1', idx)}
                       onPasteImage={(file) => handleAttachImageFile(file, '1', idx)}
                       onManualPasteClick={() => handleManualPasteFromClipboard('1', idx)}
-                      onOpenDraw={() => handleOpenDrawModal('1', idx, q.imageUrl, q.imageCaption)}
+                      onOpenDraw={() => handleOpenDrawModal('1', idx, q.image || q.imageUrl, q.imageCaption)}
                       onOpenReactionBuilder={() => handleOpenReactionModal('1', idx, q.imageCaption)}
                       onRemove={() => handleRemoveQuestionImage('1', idx)}
                       onUpdateCaption={(caption) => handleUpdateQuestionCaption('1', idx, caption)}
@@ -2312,7 +2377,7 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
 
                     {/* Question Image Attachment & Dropzone */}
                     <QuestionImageBlock
-                      imageUrl={q.imageUrl}
+                      imageUrl={q.image || q.imageUrl}
                       imageCaption={q.imageCaption}
                       questionNumber={idx + 1}
                       previewMode={previewMode}
@@ -2320,7 +2385,7 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
                       onDropApparatus={(e) => handleDropApparatus(e, '2', idx)}
                       onPasteImage={(file) => handleAttachImageFile(file, '2', idx)}
                       onManualPasteClick={() => handleManualPasteFromClipboard('2', idx)}
-                      onOpenDraw={() => handleOpenDrawModal('2', idx, q.imageUrl, q.imageCaption)}
+                      onOpenDraw={() => handleOpenDrawModal('2', idx, q.image || q.imageUrl, q.imageCaption)}
                       onOpenReactionBuilder={() => handleOpenReactionModal('2', idx, q.imageCaption)}
                       onRemove={() => handleRemoveQuestionImage('2', idx)}
                       onUpdateCaption={(caption) => handleUpdateQuestionCaption('2', idx, caption)}
@@ -2632,7 +2697,7 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
 
                     {/* Question Image Attachment & Dropzone */}
                     <QuestionImageBlock
-                      imageUrl={q.imageUrl}
+                      imageUrl={q.image || q.imageUrl}
                       imageCaption={q.imageCaption}
                       questionNumber={idx + 1}
                       previewMode={previewMode}
@@ -2640,7 +2705,7 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
                       onDropApparatus={(e) => handleDropApparatus(e, '3', idx)}
                       onPasteImage={(file) => handleAttachImageFile(file, '3', idx)}
                       onManualPasteClick={() => handleManualPasteFromClipboard('3', idx)}
-                      onOpenDraw={() => handleOpenDrawModal('3', idx, q.imageUrl, q.imageCaption)}
+                      onOpenDraw={() => handleOpenDrawModal('3', idx, q.image || q.imageUrl, q.imageCaption)}
                       onOpenReactionBuilder={() => handleOpenReactionModal('3', idx, q.imageCaption)}
                       onRemove={() => handleRemoveQuestionImage('3', idx)}
                       onUpdateCaption={(caption) => handleUpdateQuestionCaption('3', idx, caption)}
@@ -2928,7 +2993,7 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
 
                     {/* Question Image Attachment & Dropzone */}
                     <QuestionImageBlock
-                      imageUrl={q.imageUrl}
+                      imageUrl={q.image || q.imageUrl}
                       imageCaption={q.imageCaption}
                       questionNumber={idx + 1}
                       previewMode={previewMode}
@@ -2936,7 +3001,7 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
                       onDropApparatus={(e) => handleDropApparatus(e, 'essay', idx)}
                       onPasteImage={(file) => handleAttachImageFile(file, 'essay', idx)}
                       onManualPasteClick={() => handleManualPasteFromClipboard('essay', idx)}
-                      onOpenDraw={() => handleOpenDrawModal('essay', idx, q.imageUrl, q.imageCaption)}
+                      onOpenDraw={() => handleOpenDrawModal('essay', idx, q.image || q.imageUrl, q.imageCaption)}
                       onOpenReactionBuilder={() => handleOpenReactionModal('essay', idx, q.imageCaption)}
                       onRemove={() => handleRemoveQuestionImage('essay', idx)}
                       onUpdateCaption={(caption) => handleUpdateQuestionCaption('essay', idx, caption)}

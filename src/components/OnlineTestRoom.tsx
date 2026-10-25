@@ -20,8 +20,16 @@ import {
   Sparkles,
   Eye,
   ListChecks,
+  Layers,
+  Image as ImageIcon,
 } from 'lucide-react';
-import { ExamData, Part1Question, Part2Question, Part3Question } from '../types/exam';
+import {
+  ExamData,
+  Part1Question,
+  Part2Question,
+  Part3Question,
+  QuestionDisplayMode,
+} from '../types/exam';
 import { MathChemView } from './MathChemView';
 import { submitStudentResult } from '../services/roomService';
 import { stripLeakedAnswerMarkers } from '../utils/chemMathNormalizer';
@@ -59,14 +67,16 @@ export function isShortAnswerMatch(studentRaw: string, correctRaw: string): bool
  * Smart Shuffle builder per separate section (Part I -> Part II -> Part III):
  * - Shuffles question order ONLY within each part and re-numbers Part I (1..18), Part II (1..4), Part III (1..6).
  * - In Part I: shuffles options A, B, C, D EXCEPT options like "Cả A, B, C đều đúng" which stay fixed at D,
- *   while updating correctAnswer accurately.
+ *   while updating correctAnswer accurately. When a question uses `pdfSliceUrl` in PDF-slice display mode,
+ *   options A, B, C, D can stay aligned with the original PDF image so clicking [A]/[B]/[C]/[D] matches the image 100%.
  * - In Part II: can either keep or shuffle the 4 statements a), b), c), d) while updating True/False keys
  *   and re-labeling display order as a), b), c), d).
  */
 function createSmartShuffledExam(
   sourceExam: ExamData,
   enableShuffle: boolean,
-  shufflePart2SubItems: boolean = true
+  shufflePart2SubItems: boolean = true,
+  keepOptionsAlignedWithPdfSlice: boolean = false
 ): {
   part1: Part1Question[];
   part2: Part2Question[];
@@ -77,43 +87,68 @@ function createSmartShuffledExam(
 
   if (!enableShuffle) {
     return {
-      part1: sourceExam.part1.map((q, idx) => ({
-        ...q,
-        id: idx + 1,
-        content: stripLeakedAnswerMarkers(q.content),
-        options: {
-          A: stripLeakedAnswerMarkers(q.options.A),
-          B: stripLeakedAnswerMarkers(q.options.B),
-          C: stripLeakedAnswerMarkers(q.options.C),
-          D: stripLeakedAnswerMarkers(q.options.D),
-        },
-      })),
-      part2: sourceExam.part2.map((q, idx) => ({
-        ...q,
-        id: idx + 1,
-        content: stripLeakedAnswerMarkers(q.content),
-        items: q.items.map((it, itemIdx) => ({
-          ...it,
-          label: fixedItemLabels[itemIdx] || it.label,
-          text: stripLeakedAnswerMarkers(it.text),
-        })),
-      })),
-      part3: sourceExam.part3.map((q, idx) => ({
-        ...q,
-        id: idx + 1,
-        content: stripLeakedAnswerMarkers(q.content),
-      })),
+      part1: sourceExam.part1.map((q, idx) => {
+        const imgSrc = q.image || q.imageUrl;
+        return {
+          ...q,
+          id: idx + 1,
+          content: stripLeakedAnswerMarkers(q.content),
+          ...(imgSrc ? { image: imgSrc, imageUrl: imgSrc } : {}),
+          options: {
+            A: stripLeakedAnswerMarkers(q.options.A),
+            B: stripLeakedAnswerMarkers(q.options.B),
+            C: stripLeakedAnswerMarkers(q.options.C),
+            D: stripLeakedAnswerMarkers(q.options.D),
+          },
+        };
+      }),
+      part2: sourceExam.part2.map((q, idx) => {
+        const imgSrc = q.image || q.imageUrl;
+        return {
+          ...q,
+          id: idx + 1,
+          content: stripLeakedAnswerMarkers(q.content),
+          ...(imgSrc ? { image: imgSrc, imageUrl: imgSrc } : {}),
+          items: q.items.map((it, itemIdx) => ({
+            ...it,
+            label: fixedItemLabels[itemIdx] || it.label,
+            text: stripLeakedAnswerMarkers(it.text),
+          })),
+        };
+      }),
+      part3: sourceExam.part3.map((q, idx) => {
+        const imgSrc = q.image || q.imageUrl;
+        return {
+          ...q,
+          id: idx + 1,
+          content: stripLeakedAnswerMarkers(q.content),
+          ...(imgSrc ? { image: imgSrc, imageUrl: imgSrc } : {}),
+        };
+      }),
       examVariantCode: sourceExam.metadata.examCode || '101',
     };
   }
 
-  // 1. Shuffle Part I questions (re-indexed 1..18) and shuffle A, B, C, D (keeping "Cả A, B, C đều đúng" fixed at D)
+  // 1. Shuffle Part I questions (re-indexed 1..18) and shuffle A, B, C, D (unless aligned with PDF slice image)
   const shuffledPart1: Part1Question[] = shuffleArray(sourceExam.part1).map((q, idx) => {
-    const permuted = permutePart1QuestionOptions(q, shuffleArray);
+    const shouldKeepOriginalABCD = keepOptionsAlignedWithPdfSlice && Boolean(q.pdfSliceUrl);
+    const permuted = shouldKeepOriginalABCD
+      ? {
+          options: {
+            A: stripLeakedAnswerMarkers(q.options.A),
+            B: stripLeakedAnswerMarkers(q.options.B),
+            C: stripLeakedAnswerMarkers(q.options.C),
+            D: stripLeakedAnswerMarkers(q.options.D),
+          },
+          correctAnswer: q.correctAnswer,
+        }
+      : permutePart1QuestionOptions(q, shuffleArray);
+    const imgSrc = q.image || q.imageUrl;
     return {
       ...q,
       id: idx + 1,
       content: stripLeakedAnswerMarkers(q.content),
+      ...(imgSrc ? { image: imgSrc, imageUrl: imgSrc } : {}),
       options: permuted.options,
       correctAnswer: permuted.correctAnswer,
     };
@@ -121,27 +156,35 @@ function createSmartShuffledExam(
 
   // 2. Shuffle Part II questions (re-indexed 1..4) and optionally shuffle statements a), b), c), d)
   const shuffledPart2: Part2Question[] = shuffleArray(sourceExam.part2).map((q, idx) => {
-    const sourceItems = shufflePart2SubItems ? shuffleArray(q.items) : [...q.items];
+    const shouldKeepOriginalItems =
+      !shufflePart2SubItems || (keepOptionsAlignedWithPdfSlice && Boolean(q.pdfSliceUrl));
+    const sourceItems = shouldKeepOriginalItems ? [...q.items] : shuffleArray(q.items);
     const permutedItems = sourceItems.map((it, itemIdx) => ({
       ...it,
       label: fixedItemLabels[itemIdx] || it.label,
       text: stripLeakedAnswerMarkers(it.text),
     }));
+    const imgSrc = q.image || q.imageUrl;
 
     return {
       ...q,
       id: idx + 1,
       content: stripLeakedAnswerMarkers(q.content),
+      ...(imgSrc ? { image: imgSrc, imageUrl: imgSrc } : {}),
       items: permutedItems,
     };
   });
 
   // 3. Shuffle Part III questions (re-indexed 1..6)
-  const shuffledPart3: Part3Question[] = shuffleArray(sourceExam.part3).map((q, idx) => ({
-    ...q,
-    id: idx + 1,
-    content: stripLeakedAnswerMarkers(q.content),
-  }));
+  const shuffledPart3: Part3Question[] = shuffleArray(sourceExam.part3).map((q, idx) => {
+    const imgSrc = q.image || q.imageUrl;
+    return {
+      ...q,
+      id: idx + 1,
+      content: stripLeakedAnswerMarkers(q.content),
+      ...(imgSrc ? { image: imgSrc, imageUrl: imgSrc } : {}),
+    };
+  });
 
   const randomCode = String(Math.floor(100 + Math.random() * 900));
 
@@ -192,15 +235,24 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
   const [keyUpdateBanner, setKeyUpdateBanner] = useState<string | null>(null);
   const [showDetailedResultTable, setShowDetailedResultTable] = useState<boolean>(true);
 
+  // Enforce principle: "CHỮ ĐỂ NGUYÊN DẠNG VĂN BẢN - CHỈ CẮT RIÊNG VÙNG HÌNH VẼ"
+  // Never display duplicate whole-question PDF slices; always render HTML+KaTeX + isolated diagram imageUrl
+  const hasAnyPdfSlices = false;
+
+  const [displayMode, setDisplayMode] = useState<QuestionDisplayMode>('text_katex');
+
   // Smart Shuffle State (Automatically shuffles questions within each part and options A/B/C/D)
   const [isSmartShuffleEnabled, setIsSmartShuffleEnabled] = useState<boolean>(true);
   const [shufflePart2Items, setShufflePart2Items] = useState<boolean>(true);
   const [activeExamState, setActiveExamState] = useState(() =>
-    createSmartShuffledExam(exam, true, true)
+    createSmartShuffledExam(exam, true, true, false)
   );
 
   useEffect(() => {
-    setActiveExamState(createSmartShuffledExam(exam, isSmartShuffleEnabled, shufflePart2Items));
+    setDisplayMode('text_katex');
+    setActiveExamState(
+      createSmartShuffledExam(exam, isSmartShuffleEnabled, shufflePart2Items, false)
+    );
   }, [exam]);
 
   const [isSubmitted, setIsSubmitted] = useState<boolean>(false);
@@ -455,11 +507,19 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
 
   const handleReshuffleNewAttempt = (
     enableShuffle: boolean,
-    nextShufflePart2: boolean = shufflePart2Items
+    nextShufflePart2: boolean = shufflePart2Items,
+    nextDisplayMode: QuestionDisplayMode = displayMode
   ) => {
     setIsSmartShuffleEnabled(enableShuffle);
     setShufflePart2Items(nextShufflePart2);
-    setActiveExamState(createSmartShuffledExam(exam, enableShuffle, nextShufflePart2));
+    setActiveExamState(
+      createSmartShuffledExam(
+        exam,
+        enableShuffle,
+        nextShufflePart2,
+        hasAnyPdfSlices && nextDisplayMode !== 'text_katex'
+      )
+    );
     setPart1Answers({});
     setPart2Answers({});
     setPart3Answers({});
@@ -808,6 +868,36 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                 >
                   {isSmartShuffleEnabled ? 'Xem thứ tự gốc' : 'Bật trộn đề'}
                 </button>
+              </div>
+            )}
+
+            {/* Dual Display Mode Selector (Nguyên bản PDF 100% / Chế độ Kép / Văn bản KaTeX) */}
+            {hasAnyPdfSlices && (
+              <div className="flex flex-wrap items-center gap-1 bg-indigo-50/80 border border-indigo-200 rounded-xl p-1">
+                <span className="text-[10px] font-bold text-indigo-900 px-1.5 flex items-center gap-1">
+                  <Layers className="w-3 h-3 text-indigo-600" />
+                  <span>Hiển thị đề:</span>
+                </span>
+                {(
+                  [
+                    { id: 'hybrid', label: 'Kép (PDF gốc + KaTeX)' },
+                    { id: 'pdf_original', label: 'Nguyên bản PDF 100%' },
+                    { id: 'text_katex', label: 'Văn bản KaTeX + Hình' },
+                  ] as { id: QuestionDisplayMode; label: string }[]
+                ).map((mode) => (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    onClick={() => setDisplayMode(mode.id)}
+                    className={`px-2 py-0.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                      displayMode === mode.id
+                        ? 'bg-indigo-600 text-white shadow-2xs'
+                        : 'text-slate-700 hover:bg-white'
+                    }`}
+                  >
+                    {mode.label}
+                  </button>
+                ))}
               </div>
             )}
 
@@ -1957,23 +2047,23 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                       </div>
                     </div>
 
-                    {/* Attached Experiment / Structure Image */}
-                    {q.imageUrl && (
+                    {/* Single Isolated Diagram Image Between Stem and Options */}
+                    {(q.image || q.imageUrl) && (
                       <div className="exam-diagram-wrapper my-3 text-center pl-0 sm:pl-12 pr-0 sm:pr-2 max-w-full overflow-x-auto">
                         <img
-                          src={q.imageUrl}
+                          src={q.image || q.imageUrl}
                           alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
-                          className="exam-diagram-img max-w-full h-auto max-h-56 mx-auto object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-2xs"
+                          className="exam-diagram-img my-3 max-h-80 w-auto mx-auto rounded border border-slate-200 shadow-sm object-contain bg-white p-1"
                         />
                         {q.imageCaption && (
-                          <p className="text-xs italic text-slate-600 mt-1.5 font-serif">
+                          <p className="text-xs italic text-slate-600 mt-1 font-serif">
                             {q.imageCaption}
                           </p>
                         )}
                       </div>
                     )}
 
-                    {/* 4 Radio Buttons (A, B, C, D) - Minimum 44px touch target height */}
+                    {/* 4 Interactive Answer Buttons ([A], [B], [C], [D]) - Minimum 44px touch target height */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pl-0 sm:pl-12">
                       {(['A', 'B', 'C', 'D'] as const).map((opt) => {
                         const isChosen = studentChoice === opt;
@@ -2021,8 +2111,8 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                               }}
                               className="w-4 h-4 text-sky-600 border-slate-300 focus:ring-sky-500 shrink-0 accent-sky-600"
                             />
-                            <span className="font-bold text-sky-800 shrink-0">
-                              {opt}.
+                            <span className="px-2 py-0.5 rounded-md bg-sky-100 text-sky-900 font-black shrink-0">
+                              [{opt}]
                             </span>
                             <div className="flex-1 min-w-0 max-w-full overflow-x-auto">
                               <MathChemView content={q.options[opt]} />
@@ -2112,15 +2202,15 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                       )}
                     </div>
 
-                    {q.imageUrl && (
+                    {(q.image || q.imageUrl) && (
                       <div className="exam-diagram-wrapper my-3 text-center pl-0 sm:pl-12 pr-0 sm:pr-2 max-w-full overflow-x-auto">
                         <img
-                          src={q.imageUrl}
+                          src={q.image || q.imageUrl}
                           alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
-                          className="exam-diagram-img max-w-full h-auto max-h-56 mx-auto object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-2xs"
+                          className="exam-diagram-img my-3 max-h-80 w-auto mx-auto rounded border border-slate-200 shadow-sm object-contain bg-white p-1"
                         />
                         {q.imageCaption && (
-                          <p className="text-xs italic text-slate-600 mt-1.5 font-serif">
+                          <p className="text-xs italic text-slate-600 mt-1 font-serif">
                             {q.imageCaption}
                           </p>
                         )}
@@ -2302,15 +2392,15 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
                       </div>
                     </div>
 
-                    {q.imageUrl && (
+                    {(q.image || q.imageUrl) && (
                       <div className="exam-diagram-wrapper my-3 text-center pl-0 sm:pl-12 pr-0 sm:pr-2 max-w-full overflow-x-auto">
                         <img
-                          src={q.imageUrl}
+                          src={q.image || q.imageUrl}
                           alt={q.imageCaption || `Hình thí nghiệm Câu ${idx + 1}`}
-                          className="exam-diagram-img max-w-full h-auto max-h-56 mx-auto object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-2xs"
+                          className="exam-diagram-img my-3 max-h-80 w-auto mx-auto rounded border border-slate-200 shadow-sm object-contain bg-white p-1"
                         />
                         {q.imageCaption && (
-                          <p className="text-xs italic text-slate-600 mt-1.5 font-serif">
+                          <p className="text-xs italic text-slate-600 mt-1 font-serif">
                             {q.imageCaption}
                           </p>
                         )}

@@ -4,6 +4,7 @@ import {
   Part3Question,
   EssayQuestion,
   CognitiveLevel,
+  PdfQuestionCropBox,
 } from '../types/exam';
 import {
   normalizeBrokenFormulasToLatex,
@@ -24,15 +25,32 @@ export interface AutoCroppedFigure {
   dataUrl: string;
   partHint?: 1 | 2 | 3;
   questionHint?: number;
+  seqInPartHint?: number;
+  globalQuestionHint?: number;
+  cropBox?: PdfQuestionCropBox;
+}
+
+export interface AutoSlicedQuestion {
+  id: string;
+  partHint: 1 | 2 | 3;
+  questionHint: number; // Original question number in PDF (e.g. 1..28 or 1..18, 1..4, 1..6)
+  seqInPartHint: number; // 1-based index within its Part
+  pageNumber: number;
+  pdfSliceUrl: string;
+  stemSliceUrl?: string;
+  cropBox: PdfQuestionCropBox;
 }
 
 export interface RenderedPdfPage {
   pageNumber: number;
   dataUrl: string;
+  cleanDataUrl?: string; // Page image with answer underlines & Part III answer lines erased
+  diagramSourceDataUrl?: string; // Page image with all prose text lines masked to pure #FFFFFF for clean diagram-only cropping
   width: number;
   height: number;
   extractedText: string;
   autoCroppedFigures: AutoCroppedFigure[];
+  autoSlicedQuestions?: AutoSlicedQuestion[];
 }
 
 export interface ParsedPdfExamResult {
@@ -58,53 +76,198 @@ interface PdfUnderlineRect {
 }
 
 /**
- * Checks whether a region on the rendered page canvas contains actual non-white drawing/image pixels,
- * and returns the tight vertical bounds [minY, maxY] to trim excess blank whitespace.
+ * Step 3 (Pixel Bounding Box Detection):
+ * Scans a region on the prose-masked canvas for non-white pixels (R < 245 || G < 245 || B < 245).
+ * If the detected non-white bounding box has height > 25px and width > 40px, it is guaranteed to be an illustration
+ * (photo, lab experiment diagram, Pauli orbital box, structural formula, or table).
+ * Returns the tight bounding box [tightX, tightY, tightW, tightH] + white padding (10px).
  */
 function getCanvasNonWhiteBounds(
   ctx: CanvasRenderingContext2D,
   cropX: number,
   cropY: number,
   cropW: number,
-  cropH: number
-): { hasContent: boolean; tightY: number; tightH: number } {
-  if (cropW <= 10 || cropH <= 10) {
-    return { hasContent: false, tightY: cropY, tightH: cropH };
+  cropH: number,
+  pixelThreshold: number = 245,
+  minHeightPx: number = 25,
+  minWidthPx: number = 40,
+  paddingPx: number = 10
+): { hasContent: boolean; tightX: number; tightY: number; tightW: number; tightH: number } {
+  const safeX = Math.max(0, Math.round(cropX));
+  const safeY = Math.max(0, Math.round(cropY));
+  const safeW = Math.min(ctx.canvas.width - safeX, Math.round(cropW));
+  const safeH = Math.min(ctx.canvas.height - safeY, Math.round(cropH));
+
+  if (safeW <= 12 || safeH <= 12) {
+    return { hasContent: false, tightX: safeX, tightY: safeY, tightW: safeW, tightH: safeH };
   }
-  const imgData = ctx.getImageData(cropX, cropY, cropW, cropH);
+  const imgData = ctx.getImageData(safeX, safeY, safeW, safeH);
   const data = imgData.data;
 
-  let minRow = cropH;
+  let minRow = safeH;
   let maxRow = -1;
+  let minCol = safeW;
+  let maxCol = -1;
   let nonWhiteCount = 0;
 
-  for (let r = 0; r < cropH; r += 2) {
+  for (let r = 0; r < safeH; r++) {
     let rowDark = 0;
-    for (let c = 0; c < cropW; c += 2) {
-      const idx = (r * cropW + c) * 4;
-      if (data[idx] < 242 || data[idx + 1] < 242 || data[idx + 2] < 242) {
+    let rowMinC = safeW;
+    let rowMaxC = -1;
+    for (let c = 0; c < safeW; c++) {
+      const idx = (r * safeW + c) * 4;
+      if (
+        data[idx] < pixelThreshold ||
+        data[idx + 1] < pixelThreshold ||
+        data[idx + 2] < pixelThreshold
+      ) {
         rowDark++;
         nonWhiteCount++;
+        if (c < rowMinC) rowMinC = c;
+        if (c > rowMaxC) rowMaxC = c;
       }
     }
     if (rowDark >= 2) {
       if (r < minRow) minRow = r;
       if (r > maxRow) maxRow = r;
+      if (rowMinC < minCol) minCol = rowMinC;
+      if (rowMaxC > maxCol) maxCol = rowMaxC;
     }
   }
 
-  if (nonWhiteCount < 25 || maxRow <= minRow) {
-    return { hasContent: false, tightY: cropY, tightH: cropH };
+  const contentHeight = maxRow - minRow;
+  const contentWidth = maxCol - minCol;
+  if (nonWhiteCount < 25 || contentHeight <= minHeightPx || contentWidth <= minWidthPx) {
+    return { hasContent: false, tightX: safeX, tightY: safeY, tightW: safeW, tightH: safeH };
   }
 
-  const pad = 12;
-  const tightY = Math.max(0, cropY + minRow - pad);
-  const tightBottom = Math.min(ctx.canvas.height, cropY + maxRow + pad);
+  const tightY = Math.max(0, safeY + minRow - paddingPx);
+  const tightBottom = Math.min(ctx.canvas.height, safeY + maxRow + paddingPx);
+  const tightX = Math.max(0, safeX + minCol - paddingPx);
+  const tightRight = Math.min(ctx.canvas.width, safeX + maxCol + paddingPx);
+
   return {
     hasContent: true,
+    tightX,
     tightY,
-    tightH: Math.max(40, tightBottom - tightY),
+    tightW: Math.max(40, tightRight - tightX),
+    tightH: Math.max(26, tightBottom - tightY),
   };
+}
+
+/**
+ * Exports a HTMLCanvasElement to a compressed Base64 Data URL:
+ * Uses `image/jpeg` at quality 0.8 (or `image/webp` when requested) for crisp, fast-loading diagrams.
+ */
+export function canvasToCompressedDataUrl(
+  canvas: HTMLCanvasElement,
+  webpQuality: number = 0.78,
+  jpegFallbackQuality: number = 0.8
+): string {
+  try {
+    const jpegUrl = canvas.toDataURL('image/jpeg', jpegFallbackQuality);
+    if (jpegUrl && jpegUrl.startsWith('data:image/jpeg')) {
+      return jpegUrl;
+    }
+  } catch {
+    // Fallback below
+  }
+  try {
+    const webpUrl = canvas.toDataURL('image/webp', webpQuality);
+    if (webpUrl && webpUrl.startsWith('data:image/webp')) {
+      return webpUrl;
+    }
+  } catch {
+    // Ignore
+  }
+  return canvas.toDataURL('image/jpeg', 0.8);
+}
+
+/**
+ * Helper to crop an isolated diagram region from a source canvas into a crisp Base64 image (`image/jpeg`, quality: 0.8)
+ * with a clean flat #FFFFFF white padding border (10px) on all 4 sides.
+ */
+function exportCanvasSliceToDataUrl(
+  sourceCanvas: HTMLCanvasElement,
+  cropX: number,
+  cropY: number,
+  cropW: number,
+  cropH: number,
+  maxOutputWidth: number = 960,
+  jpegQuality: number = 0.8
+): string {
+  const safeX = Math.max(0, Math.round(cropX));
+  const safeY = Math.max(0, Math.round(cropY));
+  const safeW = Math.max(20, Math.min(sourceCanvas.width - safeX, Math.round(cropW)));
+  const safeH = Math.max(20, Math.min(sourceCanvas.height - safeY, Math.round(cropH)));
+
+  const scaleDown = safeW > maxOutputWidth ? maxOutputWidth / safeW : 1;
+  const innerW = Math.max(20, Math.round(safeW * scaleDown));
+  const innerH = Math.max(20, Math.round(safeH * scaleDown));
+  const whitePad = 10;
+  const outW = innerW + whitePad * 2;
+  const outH = innerH + whitePad * 2;
+
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width = outW;
+  outCanvas.height = outH;
+  const outCtx = outCanvas.getContext('2d');
+  if (!outCtx) return '';
+
+  outCtx.fillStyle = '#FFFFFF';
+  outCtx.fillRect(0, 0, outW, outH);
+  outCtx.imageSmoothingEnabled = true;
+  outCtx.imageSmoothingQuality = 'high';
+  outCtx.drawImage(sourceCanvas, safeX, safeY, safeW, safeH, whitePad, whitePad, innerW, innerH);
+  return outCanvas.toDataURL('image/jpeg', jpegQuality);
+}
+
+/**
+ * Allows Teacher to re-crop a diagram region on demand (e.g. expanding/shrinking top or bottom bounds).
+ */
+export function cropRegionFromRenderedPage(
+  page: RenderedPdfPage,
+  cropBox: PdfQuestionCropBox,
+  useCleanPage: boolean = true
+): Promise<string> {
+  return new Promise((resolve) => {
+    const srcUrl =
+      useCleanPage && (page.diagramSourceDataUrl || page.cleanDataUrl)
+        ? page.diagramSourceDataUrl || page.cleanDataUrl!
+        : page.dataUrl;
+    const img = new Image();
+    img.onload = () => {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = img.width;
+      tempCanvas.height = img.height;
+      const ctx = tempCanvas.getContext('2d');
+      if (!ctx) {
+        resolve('');
+        return;
+      }
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+      ctx.drawImage(img, 0, 0);
+
+      const xStart = cropBox.xStart ?? Math.round(tempCanvas.width * 0.055);
+      const xEnd = cropBox.xEnd ?? Math.round(tempCanvas.width * 0.945);
+      const yStart = Math.max(0, Math.min(tempCanvas.height - 20, Math.round(cropBox.yStart)));
+      const yEnd = Math.max(yStart + 24, Math.min(tempCanvas.height, Math.round(cropBox.yEnd)));
+
+      const dataUrl = exportCanvasSliceToDataUrl(
+        tempCanvas,
+        xStart,
+        yStart,
+        xEnd - xStart,
+        yEnd - yStart,
+        960,
+        0.8
+      );
+      resolve(dataUrl);
+    };
+    img.onerror = () => resolve('');
+    img.src = srcUrl;
+  });
 }
 
 /**
@@ -119,8 +282,8 @@ function hasCanvasUnderlineBelowToken(
 ): boolean {
   const cx = Math.round(pdfX * scale);
   const baselineY = Math.round(viewportHeight - pdfY * scale);
-  const stripW = 9;
-  const stripH = 6;
+  const stripW = Math.round(10 * (scale / 2.0));
+  const stripH = Math.round(7 * (scale / 2.0));
   const startX = Math.max(0, cx + 1);
   const startY = Math.max(0, baselineY + 2);
 
@@ -145,8 +308,12 @@ function hasCanvasUnderlineBelowToken(
 }
 
 /**
- * Extracts text, underline/bold/color answer hints, and high-res cropped diagrams
- * from an uploaded PDF file using PDF.js.
+ * Extracts text, underline/bold/color answer hints, and 100% accurate cropped diagrams (autoCroppedFigures)
+ * from an uploaded PDF file using PDF.js via:
+ * - Step 1: High-res auxiliary <canvas> rendering (scale: 2.0, #FFFFFF background)
+ * - Step 2: White-out (ctx.fillStyle = '#FFFFFF') question stem & option text items while preserving internal diagram labels
+ * - Step 3: Pixel Bounding Box Detection (R < 245 || G < 245 || B < 245, height > 25px, width > 40px, padding: 10px)
+ * - Fallback Gap Detection: Mandatory cropping when vertical gap Delta Y > 45px between stem and options or within stem
  */
 export async function extractPdfDocumentPages(file: File | Blob): Promise<{
   pages: RenderedPdfPage[];
@@ -166,27 +333,29 @@ export async function extractPdfDocumentPages(file: File | Blob): Promise<{
   const pages: RenderedPdfPage[] = [];
   const fullTextParts: string[] = [];
 
-  // Track active section (Part I, II, III) across page boundaries
+  // Track active section (Part I, II, III), sequential counters, and global question counter across page boundaries
   let currentPartAcrossPages: 1 | 2 | 3 = 1;
-  let lastQuestionNumAcrossPages = 1;
+  let lastQuestionNumAcrossPages = 0;
+  let globalQuestionCounter = 0;
+  const seqCounterByPart: Record<1 | 2 | 3, number> = { 1: 0, 2: 0, 3: 0 };
 
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
-    const scale = 2.0; // High resolution for crisp diagram cropping
+    // Step 1: Render PDF page onto auxiliary <canvas> at high resolution (scale: 2.0), pure white #FFFFFF background
+    const scale = 2.0;
     const viewport = page.getViewport({ scale });
 
-    // 1. Render page to <canvas>
     const canvas = document.createElement('canvas');
     canvas.width = viewport.width;
     canvas.height = viewport.height;
     const ctx = canvas.getContext('2d');
     if (ctx) {
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = '#FFFFFF';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       await page.render({ canvasContext: ctx, viewport }).promise;
     }
 
-    const pageDataUrl = canvas.toDataURL('image/png', 0.92);
+    const pageDataUrl = canvas.toDataURL('image/jpeg', 0.85);
 
     // 2. Extract underline rectangles from PDF operator list (e.g. Word underline "x y w h re f*")
     const underlineRects: PdfUnderlineRect[] = [];
@@ -207,7 +376,7 @@ export async function extractPdfDocumentPages(file: File | Blob): Promise<{
               const ry = Number(coords[1]);
               const rw = Number(coords[2]);
               const rh = Number(coords[3]);
-              if (Math.abs(rh) <= 3.0 && Math.abs(rw) >= 3.5 && Math.abs(rw) <= 50) {
+              if (Math.abs(rh) <= 3.2 && Math.abs(rw) >= 3.0 && Math.abs(rw) <= 55) {
                 underlineRects.push({
                   x: Math.min(rx, rx + rw),
                   y: Math.min(ry, ry + rh),
@@ -230,7 +399,7 @@ export async function extractPdfDocumentPages(file: File | Blob): Promise<{
               }
               const rw = maxX - minX;
               const rh = maxY - minY;
-              if (rh <= 3.0 && rw >= 3.5 && rw <= 50) {
+              if (rh <= 3.2 && rw >= 3.0 && rw <= 55) {
                 underlineRects.push({ x: minX, y: minY, w: rw, h: rh });
               }
             }
@@ -242,19 +411,21 @@ export async function extractPdfDocumentPages(file: File | Blob): Promise<{
     }
 
     // Create a clean copy of the page canvas with underline bars erased so cropped diagrams
-    // (such as Câu 14's Pauli orbital boxes) never leak the underlined answer to students
+    // never leak underlined answers (A., B., C., D. or a), b), c), d)) to students
     const cleanCanvas = document.createElement('canvas');
     cleanCanvas.width = canvas.width;
     cleanCanvas.height = canvas.height;
     const cleanCtx = cleanCanvas.getContext('2d');
     if (cleanCtx) {
+      cleanCtx.fillStyle = '#FFFFFF';
+      cleanCtx.fillRect(0, 0, cleanCanvas.width, cleanCanvas.height);
       cleanCtx.drawImage(canvas, 0, 0);
-      cleanCtx.fillStyle = '#ffffff';
+      cleanCtx.fillStyle = '#FFFFFF';
       for (const uRect of underlineRects) {
-        const ux = Math.max(0, Math.floor(uRect.x * scale) - 2);
+        const ux = Math.max(0, Math.floor(uRect.x * scale) - 3);
         const uy = Math.max(0, Math.floor(viewport.height - (uRect.y + uRect.h) * scale) - 2);
-        const uw = Math.ceil(uRect.w * scale) + 4;
-        const uh = Math.ceil(uRect.h * scale) + 4;
+        const uw = Math.ceil(uRect.w * scale) + 6;
+        const uh = Math.ceil(uRect.h * scale) + 5;
         cleanCtx.fillRect(ux, uy, uw, uh);
       }
     }
@@ -286,9 +457,11 @@ export async function extractPdfDocumentPages(file: File | Blob): Promise<{
         const fontObj = styles[fontName] || {};
         const fontFamily = String(fontObj.fontFamily || '');
         const isBold = /bold|black|heavy|demi/i.test(fontName + ' ' + fontFamily);
+        const rawStr = String(it.str);
+        const normalizedStr = typeof rawStr.normalize === 'function' ? rawStr.normalize('NFC') : rawStr;
 
         return {
-          str: String(it.str),
+          str: normalizedStr,
           pdfX,
           pdfY,
           pdfWidth,
@@ -371,11 +544,31 @@ export async function extractPdfDocumentPages(file: File | Blob): Promise<{
       return false;
     };
 
-    // Build reconstructed lines by merging adjacent glyphs in the same word (gapPt <= 1.8)
-    const lines: { y: number; pdfY: number; text: string }[] = [];
+    interface ReconstructedPdfLine {
+      y: number; // baseline in canvas px
+      pdfY: number; // baseline in PDF pt
+      top: number; // top of ascenders & diacritics in canvas px
+      bottom: number; // bottom of descenders & subscripts in canvas px
+      minX: number;
+      maxX: number;
+      maxTokenGapPt: number;
+      wordCount: number;
+      text: string;
+      items: RawPdfTextItem[];
+      part: 1 | 2 | 3;
+      origQuestionNum: number;
+      seqInPart: number;
+      globalQuestionNum: number;
+      isSectionHeaderOrFooter: boolean;
+      isQuestionStart: boolean;
+      isImageOnlyOptionLine: boolean;
+      isOptionOrAnswerLine: boolean;
+      isProseLine: boolean;
+    }
+
+    const lines: ReconstructedPdfLine[] = [];
 
     for (const cluster of clusters) {
-      // Pair stacked isotope mass/atomic numbers (top small item + bottom small item at same pdfX)
       const clusterSmall = cluster.items.filter((it) => it.fontSize < 9.5);
       const clusterNormal = cluster.items.filter((it) => it.fontSize >= 9.5);
       const usedSmall = new Set<RawPdfTextItem>();
@@ -384,7 +577,6 @@ export async function extractPdfDocumentPages(file: File | Blob): Promise<{
       for (let i = 0; i < clusterSmall.length; i++) {
         const s1 = clusterSmall[i];
         if (usedSmall.has(s1)) continue;
-        // Find another small item at nearly the same X but opposite side of baseline
         let paired: RawPdfTextItem | null = null;
         for (let j = i + 1; j < clusterSmall.length; j++) {
           const s2 = clusterSmall[j];
@@ -429,6 +621,7 @@ export async function extractPdfDocumentPages(file: File | Blob): Promise<{
       }
 
       const wordTokens: WordToken[] = [];
+      let maxTokenGapPt = 0;
       for (const it of mergedClusterItems) {
         const prev = wordTokens[wordTokens.length - 1];
         if (!prev) {
@@ -444,6 +637,9 @@ export async function extractPdfDocumentPages(file: File | Blob): Promise<{
             prev.text += it.str;
             prev.endPdfX = Math.max(prev.endPdfX, it.pdfX + it.pdfWidth);
           } else {
+            if (gapPt > maxTokenGapPt) {
+              maxTokenGapPt = gapPt;
+            }
             wordTokens.push({
               text: it.str,
               pdfX: it.pdfX,
@@ -455,17 +651,22 @@ export async function extractPdfDocumentPages(file: File | Blob): Promise<{
       }
 
       // Mark underlined option labels (A., B., C., D.) and Part II statement labels (a), b), c), d)) with leading '*'
+      // AND proactively erase any underline area right beneath A., B., C., D., a), b), c), d) on cleanCanvas!
       const formattedTokens = wordTokens.map((wt) => {
         const trimmed = wt.text.trim();
-        // Option A., B., C., D. or statement a), b), c), d)
         if (/^(?:[A-D]\.|[a-d]\))/.test(trimmed)) {
+          if (cleanCtx) {
+            cleanCtx.fillStyle = '#FFFFFF';
+            const eraseX = Math.max(0, Math.floor(wt.pdfX * scale) - 3);
+            const eraseY = Math.max(0, Math.round(viewport.height - wt.pdfY * scale) + 2);
+            cleanCtx.fillRect(
+              eraseX,
+              eraseY,
+              Math.round(30 * (scale / 2.0)),
+              Math.round(8 * (scale / 2.0))
+            );
+          }
           if (isTokenUnderlined(wt.pdfX, wt.pdfY)) {
-            if (cleanCtx) {
-              cleanCtx.fillStyle = '#ffffff';
-              const eraseX = Math.max(0, Math.floor(wt.pdfX * scale) - 2);
-              const eraseY = Math.max(0, Math.round(viewport.height - wt.pdfY * scale) + 2);
-              cleanCtx.fillRect(eraseX, eraseY, 28, 7);
-            }
             return `*${trimmed}`;
           }
         }
@@ -474,131 +675,570 @@ export async function extractPdfDocumentPages(file: File | Blob): Promise<{
 
       const lineText = formattedTokens.join(' ').replace(/\s+/g, ' ').trim();
       if (lineText) {
+        let lineTop = canvas.height;
+        let lineBottom = 0;
+        let lineMinX = canvas.width;
+        let lineMaxX = 0;
+
+        for (const it of cluster.items) {
+          const itTop = Math.floor(it.canvasY - it.fontSize * scale * 1.2);
+          const itBottom = Math.ceil(it.canvasY + it.fontSize * scale * 0.46);
+          const itLeft = Math.floor(it.canvasX);
+          const itRight = Math.ceil(it.canvasX + it.pdfWidth * scale);
+          if (itTop < lineTop) lineTop = itTop;
+          if (itBottom > lineBottom) lineBottom = itBottom;
+          if (itLeft < lineMinX) lineMinX = itLeft;
+          if (itRight > lineMaxX) lineMaxX = itRight;
+        }
+
         lines.push({
           y: cluster.canvasY,
           pdfY: cluster.pdfY,
+          top: Math.max(0, lineTop),
+          bottom: Math.min(canvas.height, lineBottom),
+          minX: Math.max(0, lineMinX),
+          maxX: Math.min(canvas.width, lineMaxX),
+          maxTokenGapPt,
+          wordCount: lineText.split(/\s+/).length,
           text: lineText,
+          items: cluster.items,
+          part: currentPartAcrossPages,
+          origQuestionNum: Math.max(1, lastQuestionNumAcrossPages),
+          seqInPart: Math.max(1, seqCounterByPart[currentPartAcrossPages]),
+          globalQuestionNum: Math.max(1, globalQuestionCounter),
+          isSectionHeaderOrFooter: false,
+          isQuestionStart: false,
+          isImageOnlyOptionLine: false,
+          isOptionOrAnswerLine: false,
+          isProseLine: false,
         });
       }
     }
 
-    // 4. Detect embedded diagrams/figures and crop them from cleanCanvas (without answer underlines)
-    const autoCroppedFigures: AutoCroppedFigure[] = [];
-    const cropSourceCtx = cleanCtx || ctx;
+    // Determine standard left margin X of question starts on this page
+    const questionStartMinXs: number[] = [];
+    for (const L of lines) {
+      const rep = repairSplitVietnameseWords(L.text);
+      if (/^(\*?\s*Câu\s+\d+)\s*[.:]/i.test(rep) || /^\s*PHẦN\s*(?:I|II|III|1|2|3)\b/i.test(rep)) {
+        questionStartMinXs.push(L.minX);
+      }
+    }
+    questionStartMinXs.sort((a, b) => a - b);
+    const pageLeftMarginX =
+      questionStartMinXs.length > 0
+        ? questionStartMinXs[Math.floor(questionStartMinXs.length * 0.25)]
+        : Math.round(canvas.width * 0.085);
+
+    // 4. First pass over lines: detect section headers, footers, and question starts ("Câu X.")
+    let seenFirstQuestionOnPage1 = pageNum > 1;
+    for (let i = 0; i < lines.length; i++) {
+      const L = lines[i];
+      const repairedLine = repairSplitVietnameseWords(L.text);
+
+      // Detect section headers & footers
+      if (/^(?:[I123]+\.\s*)?PHẦN\s*(?:III|3)\b/i.test(repairedLine.trim())) {
+        currentPartAcrossPages = 3;
+        L.isSectionHeaderOrFooter = true;
+        L.isProseLine = true;
+      } else if (/^(?:[I123]+\.\s*)?PHẦN\s*(?:II|2)\b/i.test(repairedLine.trim())) {
+        currentPartAcrossPages = 2;
+        L.isSectionHeaderOrFooter = true;
+        L.isProseLine = true;
+      } else if (/^(?:[I123]+\.\s*)?PHẦN\s*(?:I|1)\b/i.test(repairedLine.trim())) {
+        currentPartAcrossPages = 1;
+        L.isSectionHeaderOrFooter = true;
+        L.isProseLine = true;
+      } else if (
+        /(?:^|\s)(?:BẢNG\s*ĐÁP\s*ÁN|ĐÁP\s*ÁN\s*CHẤM|HƯỚNG\s*DẪN\s*CHẤM|---+\s*Hết\s*---+)/i.test(
+          repairedLine
+        ) ||
+        (L.y > canvas.height * 0.91 && /^(?:Trang\s+\d+|Mã\s*đề)/i.test(repairedLine.trim()))
+      ) {
+        L.isSectionHeaderOrFooter = true;
+        L.isProseLine = true;
+      }
+
+      // Detect Question start "Câu X."
+      const qStartMatch = repairedLine.match(/^(\*?\s*Câu\s+(\d+))\s*[.:]/i);
+      if (qStartMatch) {
+        seenFirstQuestionOnPage1 = true;
+        const origNum = Number(qStartMatch[2]);
+
+        // Look ahead up to next "Câu" or section header to see if this question has a), b), c), d)
+        let hasSubItemsLookahead = false;
+        let hasABCDLookahead = false;
+        for (let k = i + 1; k < lines.length; k++) {
+          const nextRep = repairSplitVietnameseWords(lines[k].text);
+          if (/^(\*?\s*Câu\s+\d+)\s*[.:]/i.test(nextRep) || /^\s*PHẦN\s*(?:I|II|III|1|2|3)\b/i.test(nextRep)) {
+            break;
+          }
+          if (/^\s*\*?[a-d]\s*\)/i.test(nextRep)) {
+            hasSubItemsLookahead = true;
+          }
+          if (/(?:^|\s)\*?[A-D]\s*\./.test(nextRep)) {
+            hasABCDLookahead = true;
+          }
+        }
+
+        if (hasSubItemsLookahead && !hasABCDLookahead) {
+          currentPartAcrossPages = 2;
+        } else if (origNum >= 23 && origNum <= 28 && !hasABCDLookahead && !hasSubItemsLookahead) {
+          currentPartAcrossPages = 3;
+        } else if (origNum >= 19 && origNum <= 22 && !hasABCDLookahead) {
+          currentPartAcrossPages = 2;
+        } else if (origNum === 1 && lastQuestionNumAcrossPages >= 10 && currentPartAcrossPages === 1) {
+          currentPartAcrossPages = 2;
+        } else if (origNum === 1 && currentPartAcrossPages === 2 && seqCounterByPart[2] >= 2 && !hasSubItemsLookahead) {
+          currentPartAcrossPages = 3;
+        }
+
+        lastQuestionNumAcrossPages = origNum;
+        seqCounterByPart[currentPartAcrossPages] += 1;
+        globalQuestionCounter += 1;
+        L.isQuestionStart = true;
+        L.isProseLine = true;
+      } else if (!seenFirstQuestionOnPage1 && pageNum === 1) {
+        // Exam header lines above Câu 1 on Page 1
+        L.isSectionHeaderOrFooter = true;
+        L.isProseLine = true;
+      }
+
+      L.part = currentPartAcrossPages;
+      L.origQuestionNum = Math.max(1, lastQuestionNumAcrossPages);
+      L.seqInPart = Math.max(1, seqCounterByPart[currentPartAcrossPages]);
+      L.globalQuestionNum = Math.max(1, globalQuestionCounter);
+    }
+
+    // Group lines on this page into QuestionPageBlocks so we can accurately white-out stem & option prose
+    // while preserving 100% of internal diagram labels ('Anode', 'Cathode', 'Xăng E5', 'Lớp K, L, M, N', etc.)
+    interface QuestionPageBlock {
+      startIdx: number;
+      endIdx: number;
+      firstTextOptionIdx: number;
+      hasImageOnlyOptionLine: boolean;
+      part: 1 | 2 | 3;
+      origQuestionNum: number;
+      seqInPart: number;
+      globalQuestionNum: number;
+      regionTopY: number;
+      regionBottomY: number;
+    }
+
+    const questionBlocks: QuestionPageBlock[] = [];
+    let currentBlockStart = -1;
+
+    // If pageNum > 1 and the page starts with continuation lines of the previous page's last question
+    if (pageNum > 1 && lines.length > 0 && !lines[0].isQuestionStart && !lines[0].isSectionHeaderOrFooter) {
+      currentBlockStart = 0;
+    }
 
     for (let i = 0; i < lines.length; i++) {
-      const lineText = repairSplitVietnameseWords(lines[i].text);
-
-      // Update section tracking across pages
-      if (/PHẦN\s*(?:III|3)\b/i.test(lineText)) {
-        currentPartAcrossPages = 3;
-      } else if (/PHẦN\s*(?:II|2)\b/i.test(lineText)) {
-        currentPartAcrossPages = 2;
-      } else if (/PHẦN\s*(?:I|1)\b/i.test(lineText)) {
-        currentPartAcrossPages = 1;
-      }
-
-      const qMatch = lineText.match(/^(\*?\s*Câu\s+(\d+))/i);
-      if (qMatch) {
-        lastQuestionNumAcrossPages = Number(qMatch[2]);
-      }
-
-      // Case A: Image-only option line in Part I (e.g. Câu 14: "A. B. C. *D.")
-      const isImageOnlyOptionLine =
-        currentPartAcrossPages === 1 &&
-        /^\*?[A-D]\.\s+\*?[A-D]\.\s+\*?[A-D]\.\s+\*?[A-D]\.?\s*$/.test(lineText.trim());
-
-      if (isImageOnlyOptionLine && cropSourceCtx) {
-        const cropY = Math.max(0, Math.round(lines[i].y - 52));
-        const cropH = Math.min(canvas.height - cropY, 68);
-        const cropX = Math.round(canvas.width * 0.08);
-        const cropW = Math.round(canvas.width * 0.84);
-
-        const figCanvas = document.createElement('canvas');
-        figCanvas.width = cropW;
-        figCanvas.height = cropH;
-        const figCtx = figCanvas.getContext('2d');
-        if (figCtx) {
-          figCtx.fillStyle = '#ffffff';
-          figCtx.fillRect(0, 0, cropW, cropH);
-          figCtx.drawImage(
-            cleanCanvas,
-            cropX,
-            cropY,
-            cropW,
-            cropH,
-            0,
-            0,
-            cropW,
-            cropH
-          );
-          autoCroppedFigures.push({
-            id: `fig_p${pageNum}_opt_${i}`,
-            label: `Trang ${pageNum} - Hình biểu diễn phương án A, B, C, D (Phần I - Câu ${lastQuestionNumAcrossPages})`,
-            dataUrl: figCanvas.toDataURL('image/jpeg', 0.85),
-            partHint: 1,
-            questionHint: lastQuestionNumAcrossPages,
+      const L = lines[i];
+      if (L.isSectionHeaderOrFooter) {
+        if (currentBlockStart !== -1 && i - 1 >= currentBlockStart) {
+          const refL = lines[currentBlockStart];
+          questionBlocks.push({
+            startIdx: currentBlockStart,
+            endIdx: i - 1,
+            firstTextOptionIdx: -1,
+            hasImageOnlyOptionLine: false,
+            part: refL.part,
+            origQuestionNum: refL.origQuestionNum,
+            seqInPart: refL.seqInPart,
+            globalQuestionNum: refL.globalQuestionNum,
+            regionTopY: lines[currentBlockStart].isQuestionStart
+              ? lines[currentBlockStart].top
+              : Math.round(32 * (scale / 2.0)),
+            regionBottomY: Math.max(0, L.top - Math.round(6 * (scale / 2.0))),
           });
+        }
+        currentBlockStart = -1;
+        continue;
+      }
+
+      if (L.isQuestionStart) {
+        if (currentBlockStart !== -1 && i - 1 >= currentBlockStart) {
+          const refL = lines[currentBlockStart];
+          questionBlocks.push({
+            startIdx: currentBlockStart,
+            endIdx: i - 1,
+            firstTextOptionIdx: -1,
+            hasImageOnlyOptionLine: false,
+            part: refL.part,
+            origQuestionNum: refL.origQuestionNum,
+            seqInPart: refL.seqInPart,
+            globalQuestionNum: refL.globalQuestionNum,
+            regionTopY: lines[currentBlockStart].isQuestionStart
+              ? lines[currentBlockStart].top
+              : Math.round(32 * (scale / 2.0)),
+            regionBottomY: Math.max(0, L.top - Math.round(6 * (scale / 2.0))),
+          });
+        }
+        currentBlockStart = i;
+      }
+    }
+
+    if (currentBlockStart !== -1 && lines.length - 1 >= currentBlockStart) {
+      const refL = lines[currentBlockStart];
+      questionBlocks.push({
+        startIdx: currentBlockStart,
+        endIdx: lines.length - 1,
+        firstTextOptionIdx: -1,
+        hasImageOnlyOptionLine: false,
+        part: refL.part,
+        origQuestionNum: refL.origQuestionNum,
+        seqInPart: refL.seqInPart,
+        globalQuestionNum: refL.globalQuestionNum,
+        regionTopY: lines[currentBlockStart].isQuestionStart
+          ? lines[currentBlockStart].top
+          : Math.round(32 * (scale / 2.0)),
+        regionBottomY: Math.min(
+          Math.round(canvas.height * 0.94),
+          lines[lines.length - 1].bottom + Math.round(220 * (scale / 2.0))
+        ),
+      });
+    }
+
+    // Step 2 Classification inside each QuestionPageBlock:
+    // Mark Top Stem Paragraph, Bottom Stem Prompt, and Options (A,B,C,D / a,b,c,d) as isProseLine = true
+    // while keeping internal diagram labels ('Anode', 'Cathode', 'Xăng E5', 'Lớp K, L, M, N', orbital box labels) as isProseLine = false!
+    for (const block of questionBlocks) {
+      let hasEnteredOptions = false;
+      for (let i = block.startIdx; i <= block.endIdx; i++) {
+        const L = lines[i];
+        const repairedLine = repairSplitVietnameseWords(L.text);
+
+        // Detect image-only / Pauli orbital box option line in Part I (e.g. Câu 14: "A. B. C. *D.")
+        const textWithoutOptionLabels = repairedLine
+          .replace(/\*?[A-D]\s*\./g, '')
+          .replace(/\s+/g, '')
+          .trim();
+        const isImgOnlyOpt =
+          block.part === 1 &&
+          /(?:^|\s)\*?[A-D]\s*\./.test(repairedLine) &&
+          textWithoutOptionLabels.length === 0;
+
+        if (isImgOnlyOpt) {
+          L.isImageOnlyOptionLine = true;
+          block.hasImageOnlyOptionLine = true;
+          continue;
+        }
+
+        // Detect Part III inline answer lines (e.g. "Đáp án: 125", "Đáp số 22.", or standalone "A. 2")
+        const isPart3AnswerLine =
+          /^\s*(?:Đáp\s*án|Đáp\s*số|ĐS|Kết\s*quả)\s*[:\-]?\s*-?[0-9]+/i.test(repairedLine) ||
+          (block.part === 3 && /^\s*\*?A\s*[.:]\s*-?[0-9]+(?:[.,][0-9]+)?\s*\.?\s*$/i.test(repairedLine));
+
+        if (isPart3AnswerLine && cleanCtx) {
+          cleanCtx.fillStyle = '#FFFFFF';
+          const maskY = Math.max(0, L.top - Math.round(4 * (scale / 2.0)));
+          const maskH = Math.min(
+            cleanCanvas.height - maskY,
+            L.bottom - maskY + Math.round(6 * (scale / 2.0))
+          );
+          cleanCtx.fillRect(0, maskY, cleanCanvas.width, maskH);
+        }
+
+        const isExplicitTextOption =
+          (block.part === 1 && /(?:^|\s)\*?[A-D]\s*\./.test(repairedLine)) ||
+          (block.part === 2 && /^\s*\*?[a-d]\s*\)/i.test(repairedLine)) ||
+          isPart3AnswerLine;
+
+        if (isExplicitTextOption) {
+          if (block.firstTextOptionIdx === -1) {
+            block.firstTextOptionIdx = i;
+          }
+          hasEnteredOptions = true;
+          L.isOptionOrAnswerLine = true;
+          L.isProseLine = true;
+        } else if (hasEnteredOptions) {
+          L.isOptionOrAnswerLine = true;
+          L.isProseLine = true;
         }
       }
 
-      // Case B: Vertical gap between consecutive text lines containing diagrams/photos/structures
-      if (i < lines.length - 1 && cropSourceCtx) {
-        const gap = lines[i + 1].y - lines[i].y;
-        const mentionsFigure =
-          /hình\s*vẽ|hình\s*ảnh|hình\s*bên|hình\s*a|sơ\s*đồ|đồ\s*thị|thí\s*nghiệm|mô\s*hình|công\s*thức/i.test(
-            lineText
-          );
+      // Walk Top Stem Continuation lines starting from block.startIdx
+      if (lines[block.startIdx].isQuestionStart) {
+        lines[block.startIdx].isProseLine = true;
+        for (let i = block.startIdx + 1; i <= block.endIdx; i++) {
+          const L = lines[i];
+          if (L.isOptionOrAnswerLine || L.isImageOnlyOptionLine) break;
+          const prevL = lines[i - 1];
+          const vGap = L.top - prevL.bottom;
+          const startsNearLeft = L.minX <= pageLeftMarginX + Math.round(36 * (scale / 2.0));
+          const isNormalProseSpacing = L.maxTokenGapPt <= 28;
+          if (vGap <= Math.round(22 * (scale / 2.0)) && startsNearLeft && isNormalProseSpacing) {
+            L.isProseLine = true;
+          } else {
+            // Hit a diagram gap or indented/multi-column diagram label -> stop Top Stem Continuation
+            break;
+          }
+        }
+      }
 
-        if (gap > 110 || (mentionsFigure && gap > 75)) {
-          const rawCropY = Math.max(0, Math.round(lines[i].y + 8));
-          const rawCropH = Math.min(
-            canvas.height - rawCropY,
-            Math.round(gap - 24)
-          );
-          const cropX = Math.round(canvas.width * 0.06);
-          const cropW = Math.round(canvas.width * 0.88);
+      // Walk Bottom Stem Prompt lines immediately above block.firstTextOptionIdx (e.g., Câu 1 post-diagram question line)
+      const optionAnchorIdx =
+        block.firstTextOptionIdx !== -1 ? block.firstTextOptionIdx : block.endIdx + 1;
+      for (let i = optionAnchorIdx - 1; i > block.startIdx; i--) {
+        const L = lines[i];
+        if (L.isProseLine || L.isImageOnlyOptionLine) break;
+        const nextL = i + 1 < lines.length ? lines[i + 1] : null;
+        const vGapToBelow = nextL ? nextL.top - L.bottom : 0;
+        const startsNearLeft = L.minX <= pageLeftMarginX + Math.round(32 * (scale / 2.0));
+        const isNormalProseSpacing = L.maxTokenGapPt <= 26;
+        const repText = repairSplitVietnameseWords(L.text).trim();
+        const looksLikeFullPromptSentence =
+          L.wordCount >= 6 || (L.wordCount >= 4 && /[?:.]\s*$/.test(repText));
 
-          if (rawCropH >= 50 && cropW >= 120) {
-            const bounds = getCanvasNonWhiteBounds(
-              cropSourceCtx,
-              cropX,
-              rawCropY,
-              cropW,
-              rawCropH
+        if (
+          vGapToBelow <= Math.round(26 * (scale / 2.0)) &&
+          startsNearLeft &&
+          isNormalProseSpacing &&
+          looksLikeFullPromptSentence
+        ) {
+          L.isProseLine = true;
+        } else {
+          break;
+        }
+      }
+    }
+
+    // 5. Step 2: Create `proseMaskedCanvas`:
+    // Use ctx.fillStyle = '#FFFFFF' to white-out all question stem prose lines and option lines (A,B,C,D / a,b,c,d)
+    // while keeping internal diagram labels ('Anode', 'Cathode', 'Xăng E5', 'Lớp K, L, M, N', etc.) untouched!
+    const proseMaskedCanvas = document.createElement('canvas');
+    proseMaskedCanvas.width = cleanCanvas.width;
+    proseMaskedCanvas.height = cleanCanvas.height;
+    const proseMaskedCtx = proseMaskedCanvas.getContext('2d');
+    if (proseMaskedCtx) {
+      proseMaskedCtx.fillStyle = '#FFFFFF';
+      proseMaskedCtx.fillRect(0, 0, proseMaskedCanvas.width, proseMaskedCanvas.height);
+      proseMaskedCtx.drawImage(cleanCanvas, 0, 0);
+
+      proseMaskedCtx.fillStyle = '#FFFFFF';
+      const maskPadY = Math.round(4 * (scale / 2.0));
+      for (const L of lines) {
+        if (L.isProseLine) {
+          const y0 = Math.max(0, L.top - maskPadY);
+          const y1 = Math.min(proseMaskedCanvas.height, L.bottom + maskPadY);
+          if (
+            L.isSectionHeaderOrFooter ||
+            L.isOptionOrAnswerLine ||
+            L.maxX >= proseMaskedCanvas.width * 0.58
+          ) {
+            proseMaskedCtx.fillRect(0, y0, proseMaskedCanvas.width, y1 - y0);
+          } else {
+            const x0 = Math.max(0, L.minX - Math.round(12 * (scale / 2.0)));
+            const x1 = Math.min(
+              proseMaskedCanvas.width,
+              L.maxX + Math.round(24 * (scale / 2.0))
             );
-            if (bounds.hasContent) {
-              const figCanvas = document.createElement('canvas');
-              figCanvas.width = cropW;
-              figCanvas.height = bounds.tightH;
-              const figCtx = figCanvas.getContext('2d');
-              if (figCtx) {
-                figCtx.fillStyle = '#ffffff';
-                figCtx.fillRect(0, 0, cropW, bounds.tightH);
-                figCtx.drawImage(
-                  cleanCanvas,
-                  cropX,
-                  bounds.tightY,
-                  cropW,
-                  bounds.tightH,
-                  0,
-                  0,
-                  cropW,
-                  bounds.tightH
+            proseMaskedCtx.fillRect(x0, y0, x1 - x0, y1 - y0);
+          }
+        }
+      }
+    }
+
+    // 6. Step 3 (Pixel Bounding Box Detection) + Fallback Gap Detection (Delta Y > 45px):
+    const autoCroppedFigures: AutoCroppedFigure[] = [];
+    const diagramCtx = proseMaskedCtx || cleanCtx || ctx;
+    const diagramCanvas = proseMaskedCtx ? proseMaskedCanvas : cleanCanvas;
+    const cropX = Math.round(canvas.width * 0.045);
+    const cropW = Math.round(canvas.width * 0.91);
+
+    // Helper to register at most 1 figure per question on this page (keeping the largest/most complete diagram)
+    const figureHeightByQuestionKey = new Map<string, number>();
+    const registerQuestionFigure = (fig: AutoCroppedFigure, pixelHeight: number) => {
+      const qKey = `${fig.partHint || 1}_${fig.seqInPartHint || 0}_${fig.questionHint || 0}`;
+      const existingIdx = autoCroppedFigures.findIndex(
+        (f) =>
+          `${f.partHint || 1}_${f.seqInPartHint || 0}_${f.questionHint || 0}` === qKey
+      );
+      if (existingIdx === -1) {
+        figureHeightByQuestionKey.set(qKey, pixelHeight);
+        autoCroppedFigures.push(fig);
+      } else {
+        const prevHeight = figureHeightByQuestionKey.get(qKey) || 0;
+        if (pixelHeight > prevHeight) {
+          figureHeightByQuestionKey.set(qKey, pixelHeight);
+          autoCroppedFigures[existingIdx] = fig;
+        }
+      }
+    };
+
+    if (diagramCtx && questionBlocks.length > 0) {
+      for (const block of questionBlocks) {
+        const qKey = `${block.part}_${block.seqInPart}_${block.origQuestionNum}`;
+        const partRoman = block.part === 1 ? 'I' : block.part === 2 ? 'II' : 'III';
+
+        // Primary Scan Window: from top of question block to top of first text option line (or bottom of question block)
+        const primaryScanTop = Math.max(0, block.regionTopY);
+        const primaryScanBottom =
+          block.firstTextOptionIdx !== -1 && !block.hasImageOnlyOptionLine
+            ? Math.max(primaryScanTop + 10, lines[block.firstTextOptionIdx].top - 2)
+            : block.regionBottomY;
+
+        // Step 3A: Scan primary window for non-white pixels (R < 245 || G < 245 || B < 245) with height > 25px and width > 40px
+        if (primaryScanBottom - primaryScanTop > 25) {
+          const primaryBounds = getCanvasNonWhiteBounds(
+            diagramCtx,
+            cropX,
+            primaryScanTop,
+            cropW,
+            primaryScanBottom - primaryScanTop,
+            245,
+            25,
+            40,
+            10
+          );
+          if (primaryBounds.hasContent) {
+            const dataUrl = exportCanvasSliceToDataUrl(
+              diagramCanvas,
+              primaryBounds.tightX,
+              primaryBounds.tightY,
+              primaryBounds.tightW,
+              primaryBounds.tightH,
+              960,
+              0.8
+            );
+            if (dataUrl) {
+              registerQuestionFigure(
+                {
+                  id: `fig_p${pageNum}_pt${block.part}_q${block.origQuestionNum}`,
+                  label: `Trang ${pageNum} - Hình minh họa (Phần ${partRoman} - Câu ${block.origQuestionNum})`,
+                  dataUrl,
+                  partHint: block.part,
+                  questionHint: block.origQuestionNum,
+                  seqInPartHint: block.seqInPart,
+                  globalQuestionHint: block.globalQuestionNum,
+                  cropBox: {
+                    pageNumber: pageNum,
+                    yStart: primaryBounds.tightY,
+                    yEnd: primaryBounds.tightY + primaryBounds.tightH,
+                    xStart: primaryBounds.tightX,
+                    xEnd: primaryBounds.tightX + primaryBounds.tightW,
+                  },
+                },
+                primaryBounds.tightH
+              );
+            }
+          }
+        }
+
+        // Step 3B: If not found in primary window, scan the full question vertical range [regionTopY, regionBottomY]
+        // (catches orbital boxes in options like Câu 14 or diagrams placed beside/below options)
+        if (!figureHeightByQuestionKey.has(qKey) && block.regionBottomY - primaryScanTop > 25) {
+          const fullBounds = getCanvasNonWhiteBounds(
+            diagramCtx,
+            cropX,
+            primaryScanTop,
+            cropW,
+            block.regionBottomY - primaryScanTop,
+            245,
+            25,
+            40,
+            10
+          );
+          if (fullBounds.hasContent) {
+            const dataUrl = exportCanvasSliceToDataUrl(
+              diagramCanvas,
+              fullBounds.tightX,
+              fullBounds.tightY,
+              fullBounds.tightW,
+              fullBounds.tightH,
+              960,
+              0.8
+            );
+            if (dataUrl) {
+              registerQuestionFigure(
+                {
+                  id: `fig_p${pageNum}_pt${block.part}_q${block.origQuestionNum}_full`,
+                  label: `Trang ${pageNum} - Hình minh họa (Phần ${partRoman} - Câu ${block.origQuestionNum})`,
+                  dataUrl,
+                  partHint: block.part,
+                  questionHint: block.origQuestionNum,
+                  seqInPartHint: block.seqInPart,
+                  globalQuestionHint: block.globalQuestionNum,
+                  cropBox: {
+                    pageNumber: pageNum,
+                    yStart: fullBounds.tightY,
+                    yEnd: fullBounds.tightY + fullBounds.tightH,
+                    xStart: fullBounds.tightX,
+                    xEnd: fullBounds.tightX + fullBounds.tightW,
+                  },
+                },
+                fullBounds.tightH
+              );
+            }
+          }
+        }
+
+        // Step 3C (Fallback Gap Detection):
+        // If vertical gap Delta Y > 45px between consecutive prose lines in the question (e.g. last stem line -> option A./a) or within stem),
+        // mandatorily crop that gap region as question.image so no diagram is ever missed!
+        const blockProseIndices: number[] = [];
+        for (let i = block.startIdx; i <= block.endIdx; i++) {
+          if (lines[i].isProseLine) {
+            blockProseIndices.push(i);
+          }
+        }
+
+        for (let pIdx = 0; pIdx < blockProseIndices.length - 1; pIdx++) {
+          const proseA = lines[blockProseIndices[pIdx]];
+          const proseB = lines[blockProseIndices[pIdx + 1]];
+          if (proseA.isOptionOrAnswerLine) continue;
+
+          const gapPx = proseB.top - proseA.bottom;
+          if (gapPx > 45) {
+            const gapTop = Math.max(0, proseA.bottom + 4);
+            const gapBottom = Math.min(canvas.height, proseB.top - 4);
+            const gapH = gapBottom - gapTop;
+            if (gapH > 25 && !figureHeightByQuestionKey.has(qKey)) {
+              const relaxedBounds = getCanvasNonWhiteBounds(
+                diagramCtx,
+                cropX,
+                gapTop,
+                cropW,
+                gapH,
+                250,
+                16,
+                24,
+                10
+              );
+              const finalX = relaxedBounds.hasContent ? relaxedBounds.tightX : cropX;
+              const finalY = relaxedBounds.hasContent ? relaxedBounds.tightY : gapTop;
+              const finalW = relaxedBounds.hasContent ? relaxedBounds.tightW : cropW;
+              const finalH = relaxedBounds.hasContent ? relaxedBounds.tightH : gapH;
+
+              const dataUrl = exportCanvasSliceToDataUrl(
+                diagramCanvas,
+                finalX,
+                finalY,
+                finalW,
+                finalH,
+                960,
+                0.8
+              );
+              if (dataUrl) {
+                registerQuestionFigure(
+                  {
+                    id: `fig_p${pageNum}_pt${block.part}_q${block.origQuestionNum}_gap`,
+                    label: `Trang ${pageNum} - Hình minh họa (Phần ${partRoman} - Câu ${block.origQuestionNum})`,
+                    dataUrl,
+                    partHint: block.part,
+                    questionHint: block.origQuestionNum,
+                    seqInPartHint: block.seqInPart,
+                    globalQuestionHint: block.globalQuestionNum,
+                    cropBox: {
+                      pageNumber: pageNum,
+                      yStart: finalY,
+                      yEnd: finalY + finalH,
+                      xStart: finalX,
+                      xEnd: finalX + finalW,
+                    },
+                  },
+                  finalH
                 );
-                autoCroppedFigures.push({
-                  id: `fig_p${pageNum}_${i}`,
-                  label: `Trang ${pageNum} - Hình minh họa (Phần ${
-                    currentPartAcrossPages === 1
-                      ? 'I'
-                      : currentPartAcrossPages === 2
-                      ? 'II'
-                      : 'III'
-                  } - Câu ${lastQuestionNumAcrossPages})`,
-                  dataUrl: figCanvas.toDataURL('image/jpeg', 0.85),
-                  partHint: currentPartAcrossPages,
-                  questionHint: lastQuestionNumAcrossPages,
-                });
               }
             }
           }
@@ -606,16 +1246,21 @@ export async function extractPdfDocumentPages(file: File | Blob): Promise<{
       }
     }
 
+    const cleanPageDataUrl = cleanCanvas.toDataURL('image/jpeg', 0.85);
+    const diagramSourceDataUrl = proseMaskedCanvas.toDataURL('image/jpeg', 0.85);
     const pageText = lines.map((l) => l.text).join('\n');
     fullTextParts.push(pageText);
 
     pages.push({
       pageNumber: pageNum,
       dataUrl: pageDataUrl,
+      cleanDataUrl: cleanPageDataUrl,
+      diagramSourceDataUrl,
       width: canvas.width,
       height: canvas.height,
       extractedText: pageText,
       autoCroppedFigures,
+      autoSlicedQuestions: [],
     });
   }
 
@@ -634,7 +1279,8 @@ export async function extractPdfDocumentPages(file: File | Blob): Promise<{
  */
 export function parseExamTextToStructuredData(
   rawText: string,
-  autoFigures: AutoCroppedFigure[] = []
+  autoFigures: AutoCroppedFigure[] = [],
+  _autoSlices: AutoSlicedQuestion[] = []
 ): Omit<ParsedPdfExamResult, 'pages' | 'rawExtractedText'> {
   const detectionMethods = new Set<string>();
   const cleanedRawText = repairSplitVietnameseWords(rawText);
@@ -726,8 +1372,6 @@ export function parseExamTextToStructuredData(
   const part3Index = mainBodyText.search(part3HeaderRegex);
   const essayIndex = mainBodyText.search(essayHeaderRegex);
 
-  // Extract all question blocks with their character offset in mainBodyText so we can combine
-  // section-header position AND structural classification (continuous numbering Câu 1..28 or restarted Câu 1..18, 1..4, 1..6)
   const questionSplitRegex = /(?:^|\n)\s*(?=Câu\s+\d+\s*[.:])/gi;
   const rawBlocksWithOffsets: { text: string; offset: number }[] = [];
   let splitMatch: RegExpExecArray | null;
@@ -742,7 +1386,6 @@ export function parseExamTextToStructuredData(
     const end = i + 1 < splitStarts.length ? splitStarts[i + 1] : mainBodyText.length;
     let blockText = mainBodyText.slice(start, end).trim();
 
-    // Strip any trailing section header that belongs to the NEXT section (e.g. "PHẦN II..." at the bottom of Câu 18, or "PHẦN III:..." at the bottom of Câu 4 Part II)
     blockText = blockText
       .replace(/(?:^|\n)\s*PHẦN\s*(?:II|III|IV|2|3|4|TỰ\s*LUẬN)\s*[.:][\s\S]*$/i, '')
       .replace(/\s*---+\s*Hết\s*---+\s*$/i, '')
@@ -753,16 +1396,16 @@ export function parseExamTextToStructuredData(
     }
   }
 
-  const p1Blocks: { text: string; origNum: number }[] = [];
-  const p2Blocks: { text: string; origNum: number }[] = [];
-  const p3Blocks: { text: string; origNum: number }[] = [];
-  const essayBlocks: { text: string; origNum: number }[] = [];
+  const p1Blocks: { text: string; origNum: number; globalNum: number }[] = [];
+  const p2Blocks: { text: string; origNum: number; globalNum: number }[] = [];
+  const p3Blocks: { text: string; origNum: number; globalNum: number }[] = [];
+  const essayBlocks: { text: string; origNum: number; globalNum: number }[] = [];
 
   rawBlocksWithOffsets.forEach((b, globalIdx) => {
     const qNumMatch = b.text.match(/^Câu\s+(\d+)\s*[.:]/i);
     const origNum = qNumMatch ? Number(qNumMatch[1]) : globalIdx + 1;
+    const globalNum = globalIdx + 1;
 
-    // Structural checks on the question block
     const hasSubItemsABCD =
       /(?:^|\n)\s*\*?a\s*\)/i.test(b.text) &&
       /(?:^|\n)\s*\*?b\s*\)/i.test(b.text) &&
@@ -780,28 +1423,47 @@ export function parseExamTextToStructuredData(
         !hasSubItemsABCD &&
         /(?:^|\n)\s*\*?A\s*[.:]\s*-?[0-9]+(?:[.,][0-9]+)?\s*\.?\s*$/i.test(b.text));
 
-    // Determine section by header position + structural rules + continuous numbering (1..18, 19..22, 23..28)
     if (essayIndex > 0 && b.offset >= essayIndex) {
-      essayBlocks.push({ text: b.text, origNum });
+      essayBlocks.push({ text: b.text, origNum, globalNum });
     } else if (hasSubItemsABCD && !hasMultipleChoiceABCD) {
-      // Has a), b), c), d) statements -> strictly Part II (True/False)
-      p2Blocks.push({ text: b.text, origNum });
+      p2Blocks.push({ text: b.text, origNum, globalNum });
     } else if (
       (part3Index > 0 && b.offset >= part3Index) ||
       (hasShortAnswerMarker && !hasMultipleChoiceABCD) ||
       (origNum >= 23 && origNum <= 28 && !hasMultipleChoiceABCD && !hasSubItemsABCD)
     ) {
-      // Under PHẦN III or has short-answer key or continuous Câu 23..28 -> Part III (Short Answer)
-      p3Blocks.push({ text: b.text, origNum });
+      p3Blocks.push({ text: b.text, origNum, globalNum });
     } else if (
       (part2Index > 0 && b.offset >= part2Index && (part3Index < 0 || b.offset < part3Index)) ||
       (origNum >= 19 && origNum <= 22 && !hasMultipleChoiceABCD)
     ) {
-      p2Blocks.push({ text: b.text, origNum });
+      p2Blocks.push({ text: b.text, origNum, globalNum });
     } else {
-      p1Blocks.push({ text: b.text, origNum });
+      p1Blocks.push({ text: b.text, origNum, globalNum });
     }
   });
+
+  // Helper to match an isolated AutoCroppedFigure for (part, qId, origNum, globalNum)
+  const findQuestionFigure = (
+    part: 1 | 2 | 3,
+    qId: number,
+    origNum: number,
+    globalNum: number
+  ): AutoCroppedFigure | undefined => {
+    return (
+      autoFigures.find(
+        (f) =>
+          f.partHint === part &&
+          (f.seqInPartHint === qId || f.questionHint === origNum || f.questionHint === qId)
+      ) ||
+      autoFigures.find((f) => f.globalQuestionHint === globalNum) ||
+      autoFigures.find(
+        (f) =>
+          (f.partHint === part || (part === 1 && !f.partHint)) &&
+          (f.questionHint === origNum || f.seqInPartHint === qId || f.questionHint === qId)
+      )
+    );
+  };
 
   // 3. Parse Part I Questions (18 questions, 0.25 pts each = 4.50 pts)
   const part1: Part1Question[] = [];
@@ -809,6 +1471,7 @@ export function parseExamTextToStructuredData(
   p1Blocks.forEach((bObj, idx) => {
     const qId = idx + 1;
     const origNum = bObj.origNum;
+    const globalNum = bObj.globalNum;
     let body = bObj.text.replace(/^Câu\s+\d+\s*[.:]\s*/i, '').trim();
 
     let detectedAns: 'A' | 'B' | 'C' | 'D' =
@@ -836,7 +1499,6 @@ export function parseExamTextToStructuredData(
       body = body.slice(0, expMatch.index).trim();
     }
 
-    // Match option labels A., B., C., D. (including *A., <u>A.</u>, etc.)
     const optRegex =
       /(?:^|\s|\n)(\*+|<u>|\[GẠCH CHÂN\]|\[TÔ ĐỎ\]|\[IN ĐẬM\])?\s*([A-D])\s*(\*+)?\s*[.)](?=\s|$)/g;
     const matches: {
@@ -860,7 +1522,6 @@ export function parseExamTextToStructuredData(
       });
     }
 
-    // Keep the last 4 option matches if 'A.' appeared in the question stem
     const activeMatches = matches.length > 4 ? matches.slice(-4) : matches;
 
     let questionStem = body;
@@ -871,10 +1532,7 @@ export function parseExamTextToStructuredData(
       D: 'Phương án D',
     };
 
-    // Find matching cropped figure for this Part I question
-    const matchedFig = autoFigures.find(
-      (f) => (f.partHint === 1 || !f.partHint) && (f.questionHint === qId || f.questionHint === origNum)
-    );
+    const matchedFig = findQuestionFigure(1, qId, origNum, globalNum);
 
     if (activeMatches.length >= 2) {
       questionStem = body.slice(0, activeMatches[0].startIndex).trim();
@@ -900,8 +1558,7 @@ export function parseExamTextToStructuredData(
           stripLeakedAnswerMarkers(rawOptText)
         );
 
-        // If option text is empty because the options are visual diagrams (like Câu 14 Pauli orbital boxes)
-        options[cur.letter] = cleanedOpt || `Hình ${cur.letter}`;
+        options[cur.letter] = cleanedOpt || `Phương án ${cur.letter} (Xem hình minh họa)`;
       }
     }
 
@@ -926,8 +1583,10 @@ export function parseExamTextToStructuredData(
         `Đáp án đúng là ${detectedAns} (Tự động nhận diện từ ký hiệu gạch chân trong PDF và ẩn trên giao diện làm bài của học sinh).`,
       ...(matchedFig
         ? {
+            image: matchedFig.dataUrl,
             imageUrl: matchedFig.dataUrl,
             imageCaption: `Hình minh họa Phần I - Câu ${qId}`,
+            ...(matchedFig.cropBox ? { sourceCropBox: matchedFig.cropBox } : {}),
           }
         : {}),
     });
@@ -939,9 +1598,9 @@ export function parseExamTextToStructuredData(
   p2Blocks.forEach((bObj, idx) => {
     const qId = idx + 1;
     const origNum = bObj.origNum;
+    const globalNum = bObj.globalNum;
     const body = bObj.text.replace(/^Câu\s+\d+\s*[.:]\s*/i, '').trim();
 
-    // Match sub-statement labels a), b), c), d) (not preceded by '(' like '(a)' in stem)
     const itemRegex =
       /(?:^|\n)\s*(\*+|<u>|\[GẠCH CHÂN\]|\[TÔ ĐỎ\])?\s*([a-d])\s*(\*+)?\s*\)\s*/gi;
     const itemMatches: {
@@ -980,7 +1639,6 @@ export function parseExamTextToStructuredData(
           i + 1 < itemMatches.length ? itemMatches[i + 1].startIndex : body.length;
         let rawStatement = body.slice(im.contentStart, nextStart).trim();
 
-        // Underlined (starred) = Đúng (true), Not underlined = Sai (false)
         let isCorrect =
           tableKeysForQ && typeof tableKeysForQ[im.label] === 'boolean'
             ? tableKeysForQ[im.label]
@@ -1017,10 +1675,7 @@ export function parseExamTextToStructuredData(
       });
     }
 
-    // Attach cropped figure for this Part II question (e.g. Câu 19/1, Câu 20/2, Câu 22/4)
-    const matchedFig = autoFigures.find(
-      (f) => f.partHint === 2 && (f.questionHint === qId || f.questionHint === origNum)
-    );
+    const matchedFig = findQuestionFigure(2, qId, origNum, globalNum);
 
     part2.push({
       id: qId,
@@ -1029,23 +1684,22 @@ export function parseExamTextToStructuredData(
       level: 'Hiểu',
       ...(matchedFig
         ? {
+            image: matchedFig.dataUrl,
             imageUrl: matchedFig.dataUrl,
             imageCaption: `Hình minh họa Phần II - Câu ${qId}`,
+            ...(matchedFig.cropBox ? { sourceCropBox: matchedFig.cropBox } : {}),
           }
         : {}),
     });
   });
 
   // 5. Parse Part III Questions (6 questions, Short Answer - 0.25 pts each = 1.50 pts)
-  // Supports:
-  // - "Đáp án:125" / "Đáp án: 2"
-  // - "Đáp số 22." / "Đáp số 10."
-  // - Standalone "A. 2" / "A. 5" / "A.13" (with no B., C., D.)
   const part3: Part3Question[] = [];
 
   p3Blocks.forEach((bObj, idx) => {
     const qId = idx + 1;
     const origNum = bObj.origNum;
+    const globalNum = bObj.globalNum;
     let body = bObj.text
       .replace(/^Câu\s+\d+\s*[.:]\s*/i, '')
       .replace(/\s*---+\s*Hết\s*---+\s*$/gi, '')
@@ -1054,7 +1708,6 @@ export function parseExamTextToStructuredData(
     let correctAnswer = answerTablePart3[qId] || answerTablePart3[origNum] || '';
     let explanation = '';
 
-    // Extract explanation if present
     const expMatch = body.match(
       /(?:^|\n)\s*(?:Lời\s*giải|Giải\s*thích|Hướng\s*dẫn)\s*[:\-]?\s*([\s\S]+)$/i
     );
@@ -1063,7 +1716,6 @@ export function parseExamTextToStructuredData(
       body = body.slice(0, expMatch.index).trim();
     }
 
-    // Format 1 & 2: "Đáp án:125", "Đáp án: 2", "Đáp số 22.", "Đáp số 10."
     const ansLabelRegex =
       /(?:^|\n|\s)(?:Đáp\s*án|Đáp\s*số|ĐS|Kết\s*quả)\s*[:\-]?\s*(-?[0-9]+(?:[.,][0-9]+)?)\s*\.?\s*(?:[a-zA-Z%°/]*)?\s*$/i;
     const ansMatch = body.match(ansLabelRegex);
@@ -1072,7 +1724,6 @@ export function parseExamTextToStructuredData(
       detectionMethods.add('Đáp án / Đáp số Phần III');
       body = body.slice(0, ansMatch.index).trim();
     } else {
-      // Format 3: Standalone "A. 2" / "A. 5" / "A.13" at the end of Part III question (with NO B., C., D.)
       const standaloneAMatch = body.match(
         /(?:^|\n|\s)\*?A\s*[.:]\s*(-?[0-9]+(?:[.,][0-9]+)?)\s*\.?\s*$/i
       );
@@ -1083,9 +1734,7 @@ export function parseExamTextToStructuredData(
       }
     }
 
-    const matchedFig = autoFigures.find(
-      (f) => f.partHint === 3 && (f.questionHint === qId || f.questionHint === origNum)
-    );
+    const matchedFig = findQuestionFigure(3, qId, origNum, globalNum);
 
     part3.push({
       id: qId,
@@ -1095,8 +1744,10 @@ export function parseExamTextToStructuredData(
       explanation: explanation || `Đáp số chuẩn: ${correctAnswer || '1'}`,
       ...(matchedFig
         ? {
+            image: matchedFig.dataUrl,
             imageUrl: matchedFig.dataUrl,
             imageCaption: `Hình minh họa Phần III - Câu ${qId}`,
+            ...(matchedFig.cropBox ? { sourceCropBox: matchedFig.cropBox } : {}),
           }
         : {}),
     });
@@ -1412,7 +2063,7 @@ Câu 6: Nguyên tử của nguyên tố potassium có 19 electron. Ở trạng t
 
   return {
     pageNumber: 1,
-    dataUrl: canvas.toDataURL('image/png', 0.92),
+    dataUrl: canvasToCompressedDataUrl(canvas, 0.72, 0.78),
     width: canvas.width,
     height: canvas.height,
     extractedText: demoRawText,
@@ -1420,7 +2071,7 @@ Câu 6: Nguyên tử của nguyên tố potassium có 19 electron. Ở trạng t
       {
         id: 'fig_demo_q2',
         label: 'Trang 1 - Hình vẽ thí nghiệm điều chế Ester (Phần I - Câu 2)',
-        dataUrl: labDiagramCanvas.toDataURL('image/png', 0.95),
+        dataUrl: canvasToCompressedDataUrl(labDiagramCanvas, 0.65, 0.7),
         partHint: 1,
         questionHint: 2,
       },

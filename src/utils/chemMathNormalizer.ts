@@ -10,7 +10,7 @@
  */
 export function repairSplitVietnameseWords(text: string): string {
   if (!text) return '';
-  let s = text;
+  let s = typeof text.normalize === 'function' ? text.normalize('NFC') : text;
 
   // Normalize common section headers that may have intra-word spaces from PDF spans
   s = s.replace(/P\s*H\s*[ẦAÀ]\s*N\s+(I{1,3}|[123])\s*([.:])/gi, 'PHẦN $1$2 ');

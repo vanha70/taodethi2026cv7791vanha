@@ -169,6 +169,43 @@
         }
       },
       "required": ["publicAppUrl"]
+    },
+    "ExamQuestionChunk": {
+      "title": "ExamQuestionChunk",
+      "description": "A chunked batch of exam questions and compressed WebP/JPEG PDF slices stored in a subcollection to stay well under the 1MB Firestore document limit",
+      "type": "object",
+      "properties": {
+        "roomCode": {
+          "type": "string",
+          "description": "4-digit room code",
+          "maxLength": 10
+        },
+        "chunkIndex": {
+          "type": "number",
+          "description": "0-based order of the chunk"
+        },
+        "part1Items": {
+          "type": "array",
+          "description": "Batch of Part I questions with compressed slices"
+        },
+        "part2Items": {
+          "type": "array",
+          "description": "Batch of Part II questions with compressed slices"
+        },
+        "part3Items": {
+          "type": "array",
+          "description": "Batch of Part III questions with compressed slices"
+        },
+        "essayItems": {
+          "type": "array",
+          "description": "Batch of Essay questions"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp in ISO format"
+        }
+      },
+      "required": ["roomCode", "chunkIndex"]
     }
   },
   "firestore": {
@@ -177,6 +214,18 @@
         "$ref": "#/entities/ExamRoom"
       },
       "description": "Standardized online exam rooms indexed by 4-digit roomCode"
+    },
+    "/exam_rooms/{roomCode}/chunks/{chunkId}": {
+      "schema": {
+        "$ref": "#/entities/ExamQuestionChunk"
+      },
+      "description": "Chunked batches of questions and PDF image slices for an exam room"
+    },
+    "/exam_rooms/{roomCode}/question_chunks/{chunkId}": {
+      "schema": {
+        "$ref": "#/entities/ExamQuestionChunk"
+      },
+      "description": "Chunked batches of questions and PDF image slices for an exam room"
     },
     "/exam_submissions/{roomCode}/students/{submissionId}": {
       "schema": {
@@ -190,6 +239,12 @@
       },
       "description": "Published online exams indexed by 4-digit Room/Exam Code"
     },
+    "/exams/{examId}/chunks/{chunkId}": {
+      "schema": {
+        "$ref": "#/entities/ExamQuestionChunk"
+      },
+      "description": "Chunked batches of questions for a published exam"
+    },
     "/exams/{examId}/submissions/{submissionId}": {
       "schema": {
         "$ref": "#/entities/StudentSubmission"
@@ -201,6 +256,12 @@
         "$ref": "#/entities/ExamRoom"
       },
       "description": "Online exam rooms created by teachers"
+    },
+    "/rooms/{roomId}/chunks/{chunkId}": {
+      "schema": {
+        "$ref": "#/entities/ExamQuestionChunk"
+      },
+      "description": "Chunked batches of questions for an online room"
     },
     "/rooms/{roomId}/submissions/{submissionId}": {
       "schema": {

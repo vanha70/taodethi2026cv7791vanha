@@ -30,7 +30,7 @@ export function isFixedAtDOptionText(text: string): boolean {
  */
 export function hasSpecificPairReference(text: string): boolean {
   const clean = text.trim();
-  return /cả\s*[a-c]\s*và\s*[a-c]\s*đều|^hình\s*[a-d]\b/i.test(clean);
+  return /cả\s*[a-c]\s*và\s*[a-c]\s*đều|^hình\s*[a-d]\b|^phương\s*án\s*[a-d]\b/i.test(clean);
 }
 
 /**

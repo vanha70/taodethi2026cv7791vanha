@@ -25,6 +25,7 @@ import { RawImportModal } from './components/RawImportModal';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import { OnlineRoomManager } from './components/OnlineRoomManager';
 import { WordExportModal } from './components/WordExportModal';
+import { DualCloudConfigModal } from './components/DualCloudConfigModal';
 import {
   ExamRoomDoc,
   extractRoomCodeFromLocation,
@@ -68,6 +69,7 @@ export default function App() {
   const [isMetadataModalOpen, setIsMetadataModalOpen] = useState<boolean>(false);
   const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState<boolean>(false);
   const [isWordExportModalOpen, setIsWordExportModalOpen] = useState<boolean>(false);
+  const [isCloudConfigModalOpen, setIsCloudConfigModalOpen] = useState<boolean>(false);
   const [notification, setNotification] = useState<string | null>(null);
   const [lastSavedTime, setLastSavedTime] = useState<string>(() => {
     const now = new Date();
@@ -292,6 +294,7 @@ export default function App() {
           lastSavedTime={lastSavedTime}
           isSaving={isSaving}
           onOpenShortcutsModal={() => setIsShortcutsModalOpen(true)}
+          onOpenCloudConfigModal={() => setIsCloudConfigModalOpen(true)}
         />
       )}
 
@@ -634,6 +637,15 @@ export default function App() {
         onClose={() => setIsWordExportModalOpen(false)}
         exam={exam}
         onExportSuccess={(msg) => showToast(msg)}
+      />
+
+      {/* DUAL CLOUD SYNC CONFIGURATION MODAL (FIREBASE & GOOGLE SHEETS/DRIVE) */}
+      <DualCloudConfigModal
+        isOpen={isCloudConfigModalOpen}
+        onClose={() => setIsCloudConfigModalOpen(false)}
+        onConfigUpdated={() =>
+          showToast('Đã cập nhật cấu hình Lưu Trữ Đám Mây Kép (Firebase & Google Sheets/Drive)!')
+        }
       />
 
       {/* Footer */}
