@@ -1447,103 +1447,183 @@ export async function deleteRoom(roomId: string): Promise<void> {
 }
 
 // ============================================================================
-// 8. PUBLIC APP URL & ROOM LINK RESOLUTION HELPERS (NO AUTO DOMAIN MUTATION, PREVENT 404)
+// 8. PUBLIC APP URL & ROOM LINK RESOLUTION HELPERS (ALWAYS USE ACTUAL window.location.origin)
 // ============================================================================
 
 export const PUBLIC_APP_URL_STORAGE_KEY = 'taodethi2026_custom_public_url';
+const LEGACY_PUBLIC_URL_KEYS = [
+  PUBLIC_APP_URL_STORAGE_KEY,
+  'publicUrl',
+  'customPublicUrl',
+  'customPublicAppUrl',
+  'taodethi2026_public_url',
+];
 
 /**
- * Checks whether the current browser origin is an AI Studio private dev URL (`https://ais-dev-...`)
+ * Immediately purges any stored `publicUrl` containing `run.app` (or stale cross-domain URLs when on Vercel)
+ * from both safeLocalStorage and native window.localStorage so QR codes never get stuck on old `run.app` links.
  */
-export function isAisDevOrigin(origin?: string): boolean {
-  const target = (origin ?? (typeof window !== 'undefined' ? window.location.origin : '')).trim();
-  return /^https:\/\/ais-dev-/i.test(target);
+export function purgeLegacyRunAppUrlsFromStorage(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const currentOrigin = (window.location.origin || '').toLowerCase();
+    for (const key of LEGACY_PUBLIC_URL_KEYS) {
+      const val = safeLocalStorage.getItem(key);
+      if (val && (/run\.app/i.test(val) || (currentOrigin.includes('vercel.app') && !val.toLowerCase().includes(currentOrigin)))) {
+        safeLocalStorage.removeItem(key);
+      }
+    }
+    if (window.localStorage) {
+      for (let i = window.localStorage.length - 1; i >= 0; i--) {
+        const k = window.localStorage.key(i);
+        if (!k) continue;
+        const v = window.localStorage.getItem(k) || '';
+        if (
+          /run\.app/i.test(v) &&
+          (k.toLowerCase().includes('url') || k.toLowerCase().includes('public') || k.toLowerCase().includes('domain'))
+        ) {
+          window.localStorage.removeItem(k);
+        }
+      }
+    }
+  } catch {
+    // ignore storage errors in restricted WebViews
+  }
+}
+
+// Run purge immediately on module load
+purgeLegacyRunAppUrlsFromStorage();
+
+/**
+ * Legacy helper kept for compatibility; always returns false so no `run.app` warning or replacement ever triggers.
+ */
+export function isAisDevOrigin(_origin?: string): boolean {
+  return false;
 }
 
 /**
- * Returns the exact current browser base URL (`window.location.origin + window.location.pathname`)
- * without modifying the domain and without sub-paths like `/room/...` or `/exam/...`.
+ * Returns the exact current browser origin (`window.location.origin`).
  */
 export function getBrowserCurrentBaseUrl(): string {
   if (typeof window === 'undefined') return '';
-  const origin = window.location.origin;
-  let pathname = window.location.pathname || '/';
-  // Strip any accidental /room/... or /exam/... subpaths
-  pathname = pathname.replace(/\/(room|exam)(\/.*)?$/i, '/');
-  if (!pathname.startsWith('/')) {
-    pathname = '/' + pathname;
-  }
-  return origin + pathname;
+  return window.location.origin;
 }
 
 /**
  * Normalizes a custom Public URL entered by the teacher:
- * - NEVER modifies or replaces the domain (`ais-dev-` is kept as-is unless teacher pastes another domain)
+ * - Immediately rejects/clears any URL containing `run.app`
  * - Strips any query string (`?room=...`), hash (`#room=...`), or sub-paths (`/room/...`, `/exam/...`)
- * - Ensures a trailing slash `/` when pathname is empty so `${baseUrl}?room=...` produces `https://...run.app/?room=...`
+ * - Removes trailing slash so `${origin}/?mode=student&room=${roomCode}` is clean
  */
 export function normalizePublicBaseUrl(rawUrl: string): string {
   let cleaned = (rawUrl || '').trim();
   if (!cleaned) return '';
 
-  // Remove any query parameters or hash if the user pasted a full room link
-  cleaned = cleaned.split('?')[0].split('#')[0].trim();
-  // Remove any accidental /room/... or /exam/... suffix
-  cleaned = cleaned.replace(/\/(room|exam)(\/.*)?$/i, '');
-  // Ensure trailing slash so `${baseUrl}?room=${roomCode}#room=${roomCode}` matches `https://...run.app/?room=3203#room=3203`
-  if (!cleaned.endsWith('/')) {
-    cleaned = cleaned + '/';
+  // Never allow any `run.app` domain to be saved or used as an override
+  if (/run\.app/i.test(cleaned)) {
+    purgeLegacyRunAppUrlsFromStorage();
+    return '';
   }
+
+  cleaned = cleaned.split('?')[0].split('#')[0].trim();
+  cleaned = cleaned.replace(/\/(room|exam)(\/.*)?$/i, '');
+  cleaned = cleaned.replace(/\/+$/, '');
   return cleaned;
 }
 
 /**
  * Returns the resolved base URL:
- * 1. If the teacher entered a custom Public URL (via parameter or saved in localStorage), returns that normalized URL.
- * 2. Otherwise, returns the exact `window.location.origin + window.location.pathname` of the current browser.
+ * Always defaults to `window.location.origin` of the current browser (e.g. `https://...vercel.app`).
+ * Any stored URL containing `run.app` is automatically purged.
  */
 export function getResolvedPublicAppUrl(customUrlOverride?: string): string {
-  if (customUrlOverride && customUrlOverride.trim()) {
+  purgeLegacyRunAppUrlsFromStorage();
+
+  if (customUrlOverride && customUrlOverride.trim() && !/run\.app/i.test(customUrlOverride)) {
     const normalizedOverride = normalizePublicBaseUrl(customUrlOverride);
     if (normalizedOverride) return normalizedOverride;
   }
 
   if (typeof window !== 'undefined') {
+    const currentOrigin = window.location.origin;
     const savedLocal = safeLocalStorage.getItem(PUBLIC_APP_URL_STORAGE_KEY);
     if (savedLocal && savedLocal.trim()) {
-      const normalizedSaved = normalizePublicBaseUrl(savedLocal);
-      if (normalizedSaved) return normalizedSaved;
+      if (/run\.app/i.test(savedLocal)) {
+        safeLocalStorage.removeItem(PUBLIC_APP_URL_STORAGE_KEY);
+      } else {
+        const normalizedSaved = normalizePublicBaseUrl(savedLocal);
+        // Only use saved custom URL if it is valid and not a stale different domain when running on Vercel
+        if (
+          normalizedSaved &&
+          (!currentOrigin.toLowerCase().includes('vercel.app') ||
+            normalizedSaved.toLowerCase() === currentOrigin.toLowerCase())
+        ) {
+          return normalizedSaved;
+        }
+      }
     }
 
-    return normalizePublicBaseUrl(getBrowserCurrentBaseUrl());
+    return currentOrigin;
   }
 
   return '';
 }
 
 /**
- * Builds the direct student exam link using combined Query Param + Hash Routing:
- * `${baseUrl}?mode=student&room=${roomCode}#room=${roomCode}`
- * Never appends `/room/...` or `/exam/...` sub-paths and never auto-mutates `window.location.origin`.
+ * Builds the direct student exam link using the actual browser domain (`window.location.origin`):
+ * `${window.location.origin}/?mode=student&room=${roomCode}`
  */
 export function buildStudentRoomLink(roomCode: string, customBaseUrl?: string): string {
-  const baseUrl = getResolvedPublicAppUrl(customBaseUrl);
+  const baseOrigin = getResolvedPublicAppUrl(customBaseUrl) || (typeof window !== 'undefined' ? window.location.origin : '');
+  const cleanOrigin = baseOrigin.replace(/\/+$/, '');
   const cleanCode = encodeURIComponent((roomCode || '').trim());
-  return `${baseUrl}?mode=student&room=${cleanCode}#room=${cleanCode}`;
+  return `${cleanOrigin}/?mode=student&room=${cleanCode}`;
+}
+
+/**
+ * Resets Public App URL to the current browser's `window.location.origin` immediately,
+ * clearing all localStorage overrides and updating Firebase `settings/publicConfig`.
+ */
+export async function resetPublicAppUrlToCurrentOrigin(): Promise<string> {
+  purgeLegacyRunAppUrlsFromStorage();
+  if (typeof window !== 'undefined') {
+    for (const key of LEGACY_PUBLIC_URL_KEYS) {
+      safeLocalStorage.removeItem(key);
+    }
+  }
+  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+  try {
+    await setDoc(
+      doc(db, 'settings', 'publicConfig'),
+      sanitizeForFirestore({
+        publicAppUrl: '',
+        customPublicAppUrl: '',
+        lastActiveOrigin: currentOrigin,
+        updatedAt: new Date().toISOString(),
+      }),
+      { merge: true }
+    );
+  } catch {
+    // ignore if offline
+  }
+  return currentOrigin;
 }
 
 /**
  * Saves the teacher's custom Public App URL to localStorage and Firebase `settings/publicConfig`.
- * If `rawUrl` is empty, clears the custom override so the app uses `window.location.origin + window.location.pathname`.
+ * If `rawUrl` is empty or contains `run.app`, clears the custom override so the app uses `window.location.origin`.
  */
 export async function savePublicAppUrlSetting(rawUrl: string): Promise<string> {
+  purgeLegacyRunAppUrlsFromStorage();
   const trimmed = (rawUrl || '').trim();
-  const normalized = trimmed ? normalizePublicBaseUrl(trimmed) : '';
+  const normalized = trimmed && !/run\.app/i.test(trimmed) ? normalizePublicBaseUrl(trimmed) : '';
   if (typeof window !== 'undefined') {
     if (normalized) {
       safeLocalStorage.setItem(PUBLIC_APP_URL_STORAGE_KEY, normalized);
     } else {
-      safeLocalStorage.removeItem(PUBLIC_APP_URL_STORAGE_KEY);
+      for (const key of LEGACY_PUBLIC_URL_KEYS) {
+        safeLocalStorage.removeItem(key);
+      }
     }
   }
 
@@ -1554,7 +1634,8 @@ export async function savePublicAppUrlSetting(rawUrl: string): Promise<string> {
         publicAppUrl: normalized,
         customPublicAppUrl: normalized,
         updatedAt: new Date().toISOString(),
-      })
+      }),
+      { merge: true }
     );
   } catch (err) {
     console.warn('Could not sync customPublicAppUrl to Firestore settings:', err);
@@ -1564,11 +1645,18 @@ export async function savePublicAppUrlSetting(rawUrl: string): Promise<string> {
 }
 
 /**
- * Loads the teacher-configured custom Public App URL from Firebase `settings/publicConfig` (or localStorage).
- * Returns empty string `''` if the teacher has not explicitly configured a custom URL, so the app
- * falls back to the exact `window.location.origin + window.location.pathname`.
+ * Loads the teacher-configured custom Public App URL.
+ * Automatically purges any `run.app` URL from both localStorage and Firebase `settings/publicConfig`,
+ * and always defaults to `''` (which resolves to `window.location.origin`) when running on Vercel.
  */
 export async function loadPublicAppUrlSetting(): Promise<string> {
+  purgeLegacyRunAppUrlsFromStorage();
+
+  if (typeof window !== 'undefined' && window.location.origin.toLowerCase().includes('vercel.app')) {
+    // On Vercel deployment, always use the live Vercel origin by default and never overwrite with old Firestore settings
+    return '';
+  }
+
   try {
     const snap = await getDoc(doc(db, 'settings', 'publicConfig'));
     if (snap.exists()) {
@@ -1576,6 +1664,11 @@ export async function loadPublicAppUrlSetting(): Promise<string> {
       const rawField = data?.customPublicAppUrl ?? data?.publicAppUrl;
       if (typeof rawField === 'string') {
         const trimmed = rawField.trim();
+        if (/run\.app/i.test(trimmed)) {
+          // Immediately clear legacy run.app URL stored in Firestore and localStorage
+          purgeLegacyRunAppUrlsFromStorage();
+          return '';
+        }
         const normalized = trimmed ? normalizePublicBaseUrl(trimmed) : '';
         if (typeof window !== 'undefined') {
           if (normalized) {
@@ -1593,7 +1686,7 @@ export async function loadPublicAppUrlSetting(): Promise<string> {
 
   if (typeof window !== 'undefined') {
     const savedLocal = safeLocalStorage.getItem(PUBLIC_APP_URL_STORAGE_KEY);
-    if (savedLocal && savedLocal.trim()) {
+    if (savedLocal && savedLocal.trim() && !/run\.app/i.test(savedLocal)) {
       return normalizePublicBaseUrl(savedLocal);
     }
   }

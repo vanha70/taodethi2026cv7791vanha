@@ -307,6 +307,69 @@ function hasCanvasUnderlineBelowToken(
   return false;
 }
 
+const PDFJS_CDN_SCRIPT_URL =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+const PDFJS_CDN_WORKER_URL =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+let pdfJsLoadPromise: Promise<any> | null = null;
+
+/**
+ * Lazily loads PDF.js and configures `GlobalWorkerOptions.workerSrc` ONLY when a teacher
+ * actually uploads/parses a PDF file. Never runs during Student Portal startup (`?mode=student`).
+ */
+export async function ensurePdfJsLoaded(): Promise<any> {
+  if (typeof window === 'undefined') {
+    throw new Error('Môi trường trình duyệt không khả dụng.');
+  }
+
+  if (window.pdfjsLib) {
+    if (window.pdfjsLib.GlobalWorkerOptions) {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_CDN_WORKER_URL;
+    }
+    return window.pdfjsLib;
+  }
+
+  if (!pdfJsLoadPromise) {
+    pdfJsLoadPromise = new Promise((resolve, reject) => {
+      const existingScript = document.querySelector(
+        `script[src="${PDFJS_CDN_SCRIPT_URL}"]`
+      ) as HTMLScriptElement | null;
+
+      if (existingScript && window.pdfjsLib) {
+        if (window.pdfjsLib.GlobalWorkerOptions) {
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_CDN_WORKER_URL;
+        }
+        resolve(window.pdfjsLib);
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = PDFJS_CDN_SCRIPT_URL;
+      script.async = true;
+      script.crossOrigin = 'anonymous';
+      script.onload = () => {
+        if (window.pdfjsLib) {
+          if (window.pdfjsLib.GlobalWorkerOptions) {
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_CDN_WORKER_URL;
+          }
+          resolve(window.pdfjsLib);
+        } else {
+          pdfJsLoadPromise = null;
+          reject(new Error('Không thể khởi tạo thư viện PDF.js.'));
+        }
+      };
+      script.onerror = () => {
+        pdfJsLoadPromise = null;
+        reject(new Error('Không thể tải thư viện PDF.js. Vui lòng kiểm tra kết nối mạng.'));
+      };
+      document.head.appendChild(script);
+    });
+  }
+
+  return pdfJsLoadPromise;
+}
+
 /**
  * Extracts text, underline/bold/color answer hints, and 100% accurate cropped diagrams (autoCroppedFigures)
  * from an uploaded PDF file using PDF.js via:
@@ -319,13 +382,7 @@ export async function extractPdfDocumentPages(file: File | Blob): Promise<{
   pages: RenderedPdfPage[];
   fullText: string;
 }> {
-  const pdfjsLib = window.pdfjsLib;
-  if (!pdfjsLib) {
-    throw new Error('Thư viện PDF.js chưa sẵn sàng. Vui lòng tải lại trang.');
-  }
-
-  pdfjsLib.GlobalWorkerOptions.workerSrc =
-    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const pdfjsLib = await ensurePdfJsLoaded();
 
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;

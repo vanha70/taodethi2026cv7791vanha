@@ -45,6 +45,8 @@ import {
   getResolvedPublicAppUrl,
   savePublicAppUrlSetting,
   loadPublicAppUrlSetting,
+  resetPublicAppUrlToCurrentOrigin,
+  purgeLegacyRunAppUrlsFromStorage,
   loadGoogleAppsScriptUrlSetting,
   getConfiguredGoogleAppsScriptUrl,
   saveExamToGoogleSheetsAndDrive,
@@ -98,19 +100,19 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
 
   // Required Configuration Form before Publishing Exam
   const [examCodeInput, setExamCodeInput] = useState<string>(() => {
-    const existing = (currentExam.metadata.examCode || '').trim();
+    const existing = (currentExam?.metadata?.examCode || '').trim();
     return /^\d{4}$/.test(existing) ? existing : '1003';
   });
   const [targetClass, setTargetClass] = useState<string>(() => {
-    const g = (currentExam.metadata.grade || '12').trim();
+    const g = (currentExam?.metadata?.grade || '12').trim();
     if (g === '10' || g === '11' || g === '12') return `Khối ${g}`;
     return g || '12A1';
   });
   const [roomTitle, setRoomTitle] = useState<string>(
-    currentExam.metadata.examTitle || 'Đề kiểm tra định kỳ'
+    currentExam?.metadata?.examTitle || 'Đề kiểm tra định kỳ'
   );
   const [durationMinutes, setDurationMinutes] = useState<number>(
-    currentExam.metadata.durationMinutes || 45
+    currentExam?.metadata?.durationMinutes || 45
   );
   const [allowReview, setAllowReview] = useState<boolean>(true);
 
@@ -128,10 +130,16 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
     Boolean(getConfiguredGoogleAppsScriptUrl())
   );
 
-  // Public App URL configuration state (empty = use exact window.location.origin + window.location.pathname)
+  // Public App URL configuration state (empty = use exact window.location.origin)
   const [publicAppUrlInput, setPublicAppUrlInput] = useState<string>(() => {
+    purgeLegacyRunAppUrlsFromStorage();
     if (typeof window !== 'undefined') {
-      return safeLocalStorage.getItem(PUBLIC_APP_URL_STORAGE_KEY) || '';
+      const saved = safeLocalStorage.getItem(PUBLIC_APP_URL_STORAGE_KEY) || '';
+      if (/run\.app/i.test(saved)) {
+        safeLocalStorage.removeItem(PUBLIC_APP_URL_STORAGE_KEY);
+        return '';
+      }
+      return saved;
     }
     return '';
   });
@@ -141,7 +149,9 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
     typeof window !== 'undefined' && isAisDevOrigin(window.location.origin);
 
   // Student joining states
-  const [joinCode, setJoinCode] = useState<string>(initialRoomCode ? initialRoomCode.trim() : '');
+  const [joinCode, setJoinCode] = useState<string>(() =>
+    initialRoomCode ? initialRoomCode.replace(/\D/g, '').slice(0, 4) : ''
+  );
   const [previewedStudentRoom, setPreviewedStudentRoom] = useState<ExamRoomDoc | null>(null);
   const [studentName, setStudentName] = useState<string>('');
   const [studentClass, setStudentClass] = useState<string>('12A1');
@@ -253,16 +263,19 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
 
   // Load saved custom Public App URL and Google Apps Script Web App URL from Firebase settings (`settings/publicConfig`) on mount
   useEffect(() => {
+    purgeLegacyRunAppUrlsFromStorage();
     let mounted = true;
-    loadPublicAppUrlSetting()
-      .then((customSavedUrl) => {
-        if (mounted) {
-          setPublicAppUrlInput(customSavedUrl || '');
-        }
-      })
-      .catch(() => {
-        // fallback already handled
-      });
+    if (!standaloneStudentMode) {
+      loadPublicAppUrlSetting()
+        .then((customSavedUrl) => {
+          if (mounted) {
+            setPublicAppUrlInput(customSavedUrl && !/run\.app/i.test(customSavedUrl) ? customSavedUrl : '');
+          }
+        })
+        .catch(() => {
+          // fallback already handled
+        });
+    }
     loadGoogleAppsScriptUrlSetting()
       .then((savedScriptUrl) => {
         if (mounted) {
@@ -275,12 +288,27 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [standaloneStudentMode]);
+
+  // Reset Public App URL directly to window.location.origin
+  const handleResetToCurrentOrigin = async () => {
+    setPublicAppUrlInput('');
+    try {
+      setIsSavingPublicUrl(true);
+      const currentOrigin = await resetPublicAppUrlToCurrentOrigin();
+      setPublicUrlSavedBanner(
+        `Đã đặt lại theo tên miền hiện tại (window.location.origin): ${currentOrigin}`
+      );
+      setTimeout(() => setPublicUrlSavedBanner(null), 4000);
+    } finally {
+      setIsSavingPublicUrl(false);
+    }
+  };
 
   // Save Public App URL to localStorage and Firebase settings
   const handleSavePublicAppUrl = async (customUrl?: string) => {
     const rawToSave = (customUrl !== undefined ? customUrl : publicAppUrlInput).trim();
-    const normalized = rawToSave ? normalizePublicBaseUrl(rawToSave) : '';
+    const normalized = rawToSave && !/run\.app/i.test(rawToSave) ? normalizePublicBaseUrl(rawToSave) : '';
     setPublicAppUrlInput(normalized);
     try {
       setIsSavingPublicUrl(true);
@@ -289,7 +317,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
       setPublicUrlSavedBanner(
         normalized
           ? `Đã lưu Tên miền Public tùy chỉnh: ${normalized} (Đồng bộ vào LINK GỬI HS, Tin nhắn giao bài & Mã QR)`
-          : `Đã đặt về link gốc mặc định của trình duyệt: ${effectiveBase}`
+          : `Đã đặt về tên miền hiện tại của trình duyệt: ${effectiveBase}`
       );
       setTimeout(() => setPublicUrlSavedBanner(null), 4000);
     } finally {
@@ -299,6 +327,11 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
 
   // Auto-save custom URL to safeLocalStorage as teacher edits the input
   const handlePublicUrlInputChange = (val: string) => {
+    if (/run\.app/i.test(val)) {
+      purgeLegacyRunAppUrlsFromStorage();
+      setPublicAppUrlInput('');
+      return;
+    }
     setPublicAppUrlInput(val);
     const trimmed = val.trim();
     if (trimmed) {
@@ -308,7 +341,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
     }
   };
 
-  // Build direct student exam link: ${baseUrl}?room=${roomCode}#room=${roomCode}
+  // Build direct student exam link: ${window.location.origin}/?mode=student&room=${roomCode}
   const getDirectRoomUrl = (roomCode: string): string => {
     return buildStudentRoomLink(roomCode, publicAppUrlInput);
   };
@@ -705,7 +738,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                   Thiết lập Mã Đề / Mã Phòng (4 Chữ Số), Lớp &amp; Xuất Bản Đám Mây Kép
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Lưu đồng thời toàn bộ 3 phần câu hỏi ({currentExam.part1.length} câu P.I • {currentExam.part2.length} câu P.II • {currentExam.part3.length} câu P.III), đáp án ẩn, hình vẽ minh họa và công thức KaTeX lên <code className="font-mono font-bold text-indigo-700">Firebase (exam_rooms/&#123;roomCode&#125;)</code> VÀ <code className="font-mono font-bold text-emerald-700">Google Drive (Exam_&#123;roomCode&#125;.json) + Google Sheets</code>.
+                  Lưu đồng thời toàn bộ 3 phần câu hỏi ({currentExam?.part1?.length ?? 0} câu P.I • {currentExam?.part2?.length ?? 0} câu P.II • {currentExam?.part3?.length ?? 0} câu P.III), đáp án ẩn, hình vẽ minh họa và công thức KaTeX lên <code className="font-mono font-bold text-indigo-700">Firebase (exam_rooms/&#123;roomCode&#125;)</code> VÀ <code className="font-mono font-bold text-emerald-700">Google Drive (Exam_&#123;roomCode&#125;.json) + Google Sheets</code>.
                 </p>
               </div>
 
@@ -723,7 +756,9 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                   <BookOpen className="w-4 h-4 text-indigo-600" />
                   <span className="font-semibold text-slate-700">Đề hiện tại:</span>
                   <span className="font-bold text-indigo-700">
-                    {currentExam.part1.length + currentExam.part2.length + currentExam.part3.length}{' '}
+                    {(currentExam?.part1?.length ?? 0) +
+                      (currentExam?.part2?.length ?? 0) +
+                      (currentExam?.part3?.length ?? 0)}{' '}
                     câu (10,0 điểm)
                   </span>
                 </div>
@@ -1283,25 +1318,21 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                     Tên miền Public (Public URL)
                   </label>
                   <p className="text-[11px] text-slate-600">
-                    Nếu để trống, hệ thống giữ nguyên chính xác <code className="font-mono font-bold text-indigo-800">window.location.origin + window.location.pathname</code> hiện tại và gắn <code className="font-mono font-bold text-emerald-700">?room=XXXX#room=XXXX</code> để chống lỗi 404 Page Not Found.
+                    Mặc định tự động lấy chính xác <code className="font-mono font-bold text-indigo-800">window.location.origin</code> hiện tại trên thanh địa chỉ và gắn <code className="font-mono font-bold text-emerald-700">/?mode=student&amp;room=XXXX</code>.
                   </p>
                 </div>
               </div>
 
-              <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
-                <Check className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Chống lỗi 404 (?room=XXXX#room=XXXX)</span>
-              </span>
+              <button
+                type="button"
+                onClick={handleResetToCurrentOrigin}
+                className="px-3 py-1.5 rounded-xl text-[11px] font-bold bg-white hover:bg-indigo-50 text-indigo-800 border border-indigo-300 flex items-center gap-1.5 cursor-pointer transition-colors"
+                title="Đặt lại đường link theo tên miền hiện tại (window.location.origin)"
+              >
+                <RefreshCw className="w-3.5 h-3.5 text-indigo-600" />
+                <span>🔄 Đặt lại theo tên miền hiện tại (window.location.origin)</span>
+              </button>
             </div>
-
-            {isRunningOnDevDomain && (
-              <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-xs text-amber-950 font-semibold flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                <span>
-                  Lưu ý: Hãy bấm nút Share (Chia sẻ) -&gt; Publish App ở góc trên bên phải Google AI Studio để lấy link công khai dán vào đây giúp học sinh không bị lỗi 403
-                </span>
-              </div>
-            )}
 
             {publicUrlSavedBanner && (
               <div className="p-2.5 rounded-xl bg-emerald-100 border border-emerald-300 text-xs text-emerald-950 font-bold flex items-center gap-2">
@@ -1315,16 +1346,16 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                 type="url"
                 value={publicAppUrlInput}
                 onChange={(e) => handlePublicUrlInputChange(e.target.value)}
-                placeholder={`Mặc định giữ nguyên: ${getBrowserCurrentBaseUrl()}`}
+                placeholder={`Mặc định theo trình duyệt: ${getBrowserCurrentBaseUrl()}`}
                 className="flex-1 font-mono text-base sm:text-sm font-bold text-indigo-950 bg-white border-2 border-indigo-300 rounded-xl px-3.5 py-2.5 focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-200"
               />
 
               {publicAppUrlInput.trim() !== '' && (
                 <button
                   type="button"
-                  onClick={() => handleSavePublicAppUrl('')}
+                  onClick={handleResetToCurrentOrigin}
                   className="px-3.5 py-2.5 rounded-xl text-xs font-bold bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 cursor-pointer transition-colors shrink-0"
-                  title="Xóa link tùy chỉnh để dùng nguyên window.location.origin + window.location.pathname hiện tại"
+                  title="Xóa link tùy chỉnh để dùng nguyên window.location.origin hiện tại"
                 >
                   Dùng link hiện tại
                 </button>
@@ -1345,11 +1376,11 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
               <span>
                 Định dạng Link &amp; Mã QR gửi học sinh hiện tại:{' '}
                 <code className="font-mono font-bold text-emerald-800 bg-white px-2 py-0.5 rounded border border-emerald-200 break-all">
-                  {getDirectRoomUrl(activeRoom?.roomCode || (isCodeFormatValid ? examCodeInput : '3203'))}
+                  {getDirectRoomUrl(activeRoom?.roomCode || (isCodeFormatValid ? examCodeInput : '3204'))}
                 </code>
               </span>
               <span className="text-slate-500">
-                Tự động lưu vào localStorage &amp; Firebase <code className="font-mono">settings/publicConfig</code>
+                Tên miền hiện tại: <code className="font-mono font-bold text-indigo-700">{getBrowserCurrentBaseUrl()}</code>
               </span>
             </div>
           </div>
@@ -1903,7 +1934,18 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                 {getDirectRoomUrl(qrModalRoom.roomCode)}
               </div>
 
-              <div className="flex items-center gap-2 pt-2">
+              {/* Button to reset QR URL to current browser domain (window.location.origin) */}
+              <button
+                type="button"
+                onClick={handleResetToCurrentOrigin}
+                className="w-full py-2 px-3 rounded-xl text-xs font-bold bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                title="Đặt lại đường link Mã QR theo đúng tên miền hiện tại trên thanh địa chỉ trình duyệt"
+              >
+                <RefreshCw className="w-3.5 h-3.5 text-indigo-600" />
+                <span>🔄 Đặt lại theo tên miền hiện tại (window.location.origin)</span>
+              </button>
+
+              <div className="flex items-center gap-2 pt-1">
                 <button
                   type="button"
                   onClick={() => handleCopyAssignmentMessage(qrModalRoom)}

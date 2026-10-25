@@ -265,7 +265,26 @@ export default function App() {
     window.print();
   };
 
-  const totalQuestions = exam.part1.length + exam.part2.length + exam.part3.length + exam.essay.length;
+  const safeExam: ExamData = {
+    metadata: {
+      ...sampleChemistry12Exam.metadata,
+      ...(exam?.metadata || {}),
+    },
+    matrix: Array.isArray(exam?.matrix) ? exam.matrix : sampleChemistry12Exam.matrix,
+    specification: Array.isArray(exam?.specification)
+      ? exam.specification
+      : sampleChemistry12Exam.specification,
+    part1: Array.isArray(exam?.part1) ? exam.part1 : sampleChemistry12Exam.part1,
+    part2: Array.isArray(exam?.part2) ? exam.part2 : sampleChemistry12Exam.part2,
+    part3: Array.isArray(exam?.part3) ? exam.part3 : sampleChemistry12Exam.part3,
+    essay: Array.isArray(exam?.essay) ? exam.essay : sampleChemistry12Exam.essay,
+  };
+
+  const totalQuestions =
+    (safeExam.part1?.length ?? 0) +
+    (safeExam.part2?.length ?? 0) +
+    (safeExam.part3?.length ?? 0) +
+    (safeExam.essay?.length ?? 0);
 
   return (
     <div className="min-h-[100dvh] bg-slate-50 text-slate-900 flex flex-col font-sans overflow-x-clip">
@@ -280,8 +299,8 @@ export default function App() {
       {/* Main Top Header (Completely hidden in Independent Student Portal Mode or when Student is taking an exam) */}
       {!isStudentPortalMode && !studentSession && (
         <ExamHeader
-          metadata={exam.metadata}
-          onUpdateMetadata={(meta) => setExam({ ...exam, metadata: meta })}
+          metadata={safeExam.metadata}
+          onUpdateMetadata={(meta) => setExam({ ...safeExam, metadata: meta })}
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           onOpenAiModal={() => setIsAiModalOpen(true)}
@@ -304,17 +323,17 @@ export default function App() {
         {!isStudentPortalMode && !studentSession && activeTab !== 'test' && (
           <div className="mb-6 bg-white p-4 rounded-xl border border-slate-200/90 shadow-2xs flex flex-wrap items-center justify-between gap-3 text-xs text-slate-700 print:hidden">
             <div className="flex flex-wrap items-center gap-3">
-              <span className="font-bold text-slate-900">{exam.metadata.schoolName}</span>
+              <span className="font-bold text-slate-900">{safeExam.metadata?.schoolName}</span>
               <span className="text-slate-300">•</span>
-              <span className="font-semibold text-indigo-700">{exam.metadata.examTitle}</span>
+              <span className="font-semibold text-indigo-700">{safeExam.metadata?.examTitle}</span>
               <span className="text-slate-300">•</span>
-              <span>{exam.metadata.academicYear}</span>
+              <span>{safeExam.metadata?.academicYear}</span>
               <span className="text-slate-300">•</span>
               <span className="bg-indigo-50 text-indigo-800 border border-indigo-200 px-2 py-0.5 rounded font-semibold">
-                ⏱ {exam.metadata.durationMinutes} phút
+                ⏱ {safeExam.metadata?.durationMinutes} phút
               </span>
               <span className="bg-slate-100 text-slate-800 px-2 py-0.5 rounded font-medium">
-                Mã đề: {exam.metadata.examCode || '101'}
+                Mã đề: {safeExam.metadata?.examCode || '101'}
               </span>
             </div>
 
@@ -352,32 +371,32 @@ export default function App() {
         )}
 
         {/* TAB 1: QUESTION EDITOR */}
-        {activeTab === 'editor' && (
+        {!isStudentPortalMode && activeTab === 'editor' && (
           <QuestionEditor
-            part1={exam.part1}
-            part2={exam.part2}
-            part3={exam.part3}
-            essay={exam.essay}
-            subject={exam.metadata.subject}
-            onUpdatePart1={(part1) => setExam({ ...exam, part1 })}
-            onUpdatePart2={(part2) => setExam({ ...exam, part2 })}
-            onUpdatePart3={(part3) => setExam({ ...exam, part3 })}
-            onUpdateEssay={(essay) => setExam({ ...exam, essay })}
+            part1={safeExam.part1}
+            part2={safeExam.part2}
+            part3={safeExam.part3}
+            essay={safeExam.essay}
+            subject={safeExam.metadata?.subject || 'Hóa học'}
+            onUpdatePart1={(part1) => setExam({ ...safeExam, part1 })}
+            onUpdatePart2={(part2) => setExam({ ...safeExam, part2 })}
+            onUpdatePart3={(part3) => setExam({ ...safeExam, part3 })}
+            onUpdateEssay={(essay) => setExam({ ...safeExam, essay })}
           />
         )}
 
         {/* TAB 2: MATRIX & SPECIFICATION */}
-        {activeTab === 'matrix' && (
+        {!isStudentPortalMode && activeTab === 'matrix' && (
           <MatrixSpecTable
-            matrix={exam.matrix}
-            specification={exam.specification}
-            subject={exam.metadata.subject}
-            grade={exam.metadata.grade}
-            durationMinutes={exam.metadata.durationMinutes}
-            part1={exam.part1}
-            part2={exam.part2}
-            part3={exam.part3}
-            essay={exam.essay}
+            matrix={safeExam.matrix}
+            specification={safeExam.specification}
+            subject={safeExam.metadata?.subject || 'Hóa học'}
+            grade={safeExam.metadata?.grade || '12'}
+            durationMinutes={safeExam.metadata?.durationMinutes || 45}
+            part1={safeExam.part1}
+            part2={safeExam.part2}
+            part3={safeExam.part3}
+            essay={safeExam.essay}
             onUpdateMatrix={(matrix) => {
               setExam((prev) => ({ ...prev, matrix }));
               showToast('Đã cập nhật bảng Ma trận đề kiểm tra!');
@@ -399,9 +418,9 @@ export default function App() {
         )}
 
         {/* TAB 3: OFFICIAL EXAM PREVIEW (PRINTABLE) */}
-        {activeTab === 'preview' && (
+        {!isStudentPortalMode && activeTab === 'preview' && (
           <OfficialExamPreview
-            exam={exam}
+            exam={safeExam}
             onPrint={handlePrint}
             onExportDocx={handleExportDocx}
           />
@@ -410,7 +429,7 @@ export default function App() {
         {/* TAB 4: ONLINE TEST ROOM (TESTING OR STUDENT TAKING EXAM) */}
         {activeTab === 'test' && (
           <OnlineTestRoom
-            exam={studentSession ? studentSession.room.examData : exam}
+            exam={studentSession?.room?.examData || safeExam}
             onUpdateExam={(updatedExam) => {
               if (studentSession) {
                 setStudentSession({
@@ -422,9 +441,9 @@ export default function App() {
               }
             }}
             studentInfo={studentSession ? studentSession.studentInfo : undefined}
-            roomId={studentSession ? studentSession.room.id : undefined}
-            roomCode={studentSession ? studentSession.room.roomCode : undefined}
-            allowReview={studentSession ? studentSession.room.allowReview : true}
+            roomId={studentSession ? studentSession.room?.id : undefined}
+            roomCode={studentSession ? studentSession.room?.roomCode : undefined}
+            allowReview={studentSession ? studentSession.room?.allowReview : true}
             onExitTest={() => {
               if (studentSession) {
                 setStudentSession(null);
@@ -440,7 +459,7 @@ export default function App() {
         {(activeTab === 'rooms' || (isStudentPortalMode && !studentSession)) &&
           activeTab !== 'test' && (
             <OnlineRoomManager
-              currentExam={exam}
+              currentExam={safeExam}
               initialRoomCode={urlRoomCode}
               standaloneStudentMode={isStudentPortalMode}
               onExitStandaloneStudentMode={() => {
@@ -484,11 +503,11 @@ export default function App() {
                 <label className="block font-semibold text-slate-700 mb-1">Tên Trường / Đơn vị:</label>
                 <input
                   type="text"
-                  value={exam.metadata.schoolName}
+                  value={safeExam.metadata?.schoolName || ''}
                   onChange={(e) =>
                     setExam({
-                      ...exam,
-                      metadata: { ...exam.metadata, schoolName: e.target.value },
+                      ...safeExam,
+                      metadata: { ...safeExam.metadata, schoolName: e.target.value },
                     })
                   }
                   className="w-full border border-slate-300 rounded-lg p-2"
@@ -499,11 +518,11 @@ export default function App() {
                 <label className="block font-semibold text-slate-700 mb-1">Tổ bộ môn:</label>
                 <input
                   type="text"
-                  value={exam.metadata.departmentName}
+                  value={safeExam.metadata?.departmentName || ''}
                   onChange={(e) =>
                     setExam({
-                      ...exam,
-                      metadata: { ...exam.metadata, departmentName: e.target.value },
+                      ...safeExam,
+                      metadata: { ...safeExam.metadata, departmentName: e.target.value },
                     })
                   }
                   className="w-full border border-slate-300 rounded-lg p-2"
@@ -514,11 +533,11 @@ export default function App() {
                 <label className="block font-semibold text-slate-700 mb-1">Tên kỳ thi / Đề kiểm tra:</label>
                 <input
                   type="text"
-                  value={exam.metadata.examTitle}
+                  value={safeExam.metadata?.examTitle || ''}
                   onChange={(e) =>
                     setExam({
-                      ...exam,
-                      metadata: { ...exam.metadata, examTitle: e.target.value },
+                      ...safeExam,
+                      metadata: { ...safeExam.metadata, examTitle: e.target.value },
                     })
                   }
                   className="w-full border border-slate-300 rounded-lg p-2"
@@ -530,11 +549,11 @@ export default function App() {
                   <label className="block font-semibold text-slate-700 mb-1">Năm học:</label>
                   <input
                     type="text"
-                    value={exam.metadata.academicYear}
+                    value={safeExam.metadata?.academicYear || ''}
                     onChange={(e) =>
                       setExam({
-                        ...exam,
-                        metadata: { ...exam.metadata, academicYear: e.target.value },
+                        ...safeExam,
+                        metadata: { ...safeExam.metadata, academicYear: e.target.value },
                       })
                     }
                     className="w-full border border-slate-300 rounded-lg p-2"
@@ -544,12 +563,12 @@ export default function App() {
                   <label className="block font-semibold text-slate-700 mb-1">Thời gian (phút):</label>
                   <input
                     type="number"
-                    value={exam.metadata.durationMinutes}
+                    value={safeExam.metadata?.durationMinutes || 45}
                     onChange={(e) =>
                       setExam({
-                        ...exam,
+                        ...safeExam,
                         metadata: {
-                          ...exam.metadata,
+                          ...safeExam.metadata,
                           durationMinutes: Number(e.target.value),
                         },
                       })
@@ -564,11 +583,11 @@ export default function App() {
                   <label className="block font-semibold text-slate-700 mb-1">Mã đề gốc:</label>
                   <input
                     type="text"
-                    value={exam.metadata.examCode}
+                    value={safeExam.metadata?.examCode || ''}
                     onChange={(e) =>
                       setExam({
-                        ...exam,
-                        metadata: { ...exam.metadata, examCode: e.target.value },
+                        ...safeExam,
+                        metadata: { ...safeExam.metadata, examCode: e.target.value },
                       })
                     }
                     className="w-full border border-slate-300 rounded-lg p-2"
@@ -578,11 +597,11 @@ export default function App() {
                   <label className="block font-semibold text-slate-700 mb-1">Bộ sách:</label>
                   <input
                     type="text"
-                    value={exam.metadata.curriculum}
+                    value={safeExam.metadata?.curriculum || ''}
                     onChange={(e) =>
                       setExam({
-                        ...exam,
-                        metadata: { ...exam.metadata, curriculum: e.target.value },
+                        ...safeExam,
+                        metadata: { ...safeExam.metadata, curriculum: e.target.value },
                       })
                     }
                     className="w-full border border-slate-300 rounded-lg p-2"
@@ -603,50 +622,49 @@ export default function App() {
         </div>
       )}
 
-      {/* SHUFFLE MODAL */}
-      <ShuffleModal
-        isOpen={isShuffleOpen}
-        onClose={() => setIsShuffleOpen(false)}
-        exam={exam}
-      />
+      {/* TEACHER MODALS (NOT MOUNTED IN STUDENT PORTAL MODE TO PREVENT PDF.JS / MOBILE WEBVIEW CONFLICTS) */}
+      {!isStudentPortalMode && (
+        <>
+          <ShuffleModal
+            isOpen={isShuffleOpen}
+            onClose={() => setIsShuffleOpen(false)}
+            exam={safeExam}
+          />
 
-      {/* AI GENERATOR MODAL */}
-      <AiExamModal
-        isOpen={isAiModalOpen}
-        onClose={() => setIsAiModalOpen(false)}
-        onExamGenerated={handleExamGenerated}
-      />
+          <AiExamModal
+            isOpen={isAiModalOpen}
+            onClose={() => setIsAiModalOpen(false)}
+            onExamGenerated={handleExamGenerated}
+          />
 
-      {/* RAW TEXT IMPORT MODAL */}
-      <RawImportModal
-        isOpen={isRawImportOpen}
-        onClose={() => setIsRawImportOpen(false)}
-        onImportParsed={handleRawImport}
-        subject={exam.metadata.subject}
-      />
+          <RawImportModal
+            isOpen={isRawImportOpen}
+            onClose={() => setIsRawImportOpen(false)}
+            onImportParsed={handleRawImport}
+            subject={safeExam.metadata?.subject || 'Hóa học'}
+          />
 
-      {/* KEYBOARD SHORTCUTS MODAL */}
-      <KeyboardShortcutsModal
-        isOpen={isShortcutsModalOpen}
-        onClose={() => setIsShortcutsModalOpen(false)}
-      />
+          <KeyboardShortcutsModal
+            isOpen={isShortcutsModalOpen}
+            onClose={() => setIsShortcutsModalOpen(false)}
+          />
 
-      {/* WORD (.DOCX) EXPORT OPTIONS MODAL */}
-      <WordExportModal
-        isOpen={isWordExportModalOpen}
-        onClose={() => setIsWordExportModalOpen(false)}
-        exam={exam}
-        onExportSuccess={(msg) => showToast(msg)}
-      />
+          <WordExportModal
+            isOpen={isWordExportModalOpen}
+            onClose={() => setIsWordExportModalOpen(false)}
+            exam={safeExam}
+            onExportSuccess={(msg) => showToast(msg)}
+          />
 
-      {/* DUAL CLOUD SYNC CONFIGURATION MODAL (FIREBASE & GOOGLE SHEETS/DRIVE) */}
-      <DualCloudConfigModal
-        isOpen={isCloudConfigModalOpen}
-        onClose={() => setIsCloudConfigModalOpen(false)}
-        onConfigUpdated={() =>
-          showToast('Đã cập nhật cấu hình Lưu Trữ Đám Mây Kép (Firebase & Google Sheets/Drive)!')
-        }
-      />
+          <DualCloudConfigModal
+            isOpen={isCloudConfigModalOpen}
+            onClose={() => setIsCloudConfigModalOpen(false)}
+            onConfigUpdated={() =>
+              showToast('Đã cập nhật cấu hình Lưu Trữ Đám Mây Kép (Firebase & Google Sheets/Drive)!')
+            }
+          />
+        </>
+      )}
 
       {/* Footer */}
       <footer className="bg-white border-t border-slate-200 py-6 mt-12 print:hidden">

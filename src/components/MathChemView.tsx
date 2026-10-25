@@ -21,8 +21,8 @@ export const MathChemView: React.FC<MathChemViewProps> = ({
     // 1. Auto-normalize broken chemical formulas (H2SO4, Fe3+, t0, --t0-->) into $\ce{...}$
     let processed = autoNormalize ? normalizeBrokenFormulasToLatex(content) : content;
 
-    // 2. Also support standalone \ce{...} not wrapped in $...$
-    processed = processed.replace(/(?<!\$)\\ce\{([^{}]+(?:\{[^{}]*\}[^{}]*)*)\}(?!\$)/g, '$\\ce{$1}$');
+    // 2. Also support standalone \ce{...} not wrapped in $...$ (avoid regex lookbehind for iOS Safari / Zalo WebView compatibility)
+    processed = processed.replace(/(^|[^$])\\ce\{([^{}]+(?:\{[^{}]*\}[^{}]*)*)\}(?!\$)/g, '$1$\\ce{$2}$');
 
     // 3. Pattern for $$...$$ (display mode)
     processed = processed.replace(/\$\$([\s\S]+?)\$\$/g, (_, equation) => {

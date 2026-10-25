@@ -40,12 +40,18 @@ export function getActiveFirebaseConfig(): CustomFirebaseConfig {
 }
 
 const activeConfig = getActiveFirebaseConfig();
-const app: FirebaseApp = initializeApp(activeConfig);
+const app: FirebaseApp =
+  getApps().length > 0 ? getApps()[0] : initializeApp(activeConfig);
 // CRITICAL: Pass firestoreDatabaseId if present
 export let db: Firestore = activeConfig.firestoreDatabaseId
   ? getFirestore(app, activeConfig.firestoreDatabaseId)
   : getFirestore(app);
-export let auth: Auth = getAuth(app);
+export let auth: Auth | null = null;
+try {
+  auth = getAuth(app);
+} catch (err) {
+  console.warn('Firebase Auth initialization skipped in restricted WebView:', err);
+}
 
 /**
  * Allows teacher to dynamically apply a custom firebaseConfig at runtime (or revert to built-in config).
@@ -64,7 +70,11 @@ export function applyRuntimeFirebaseConfig(customConfig: CustomFirebaseConfig | 
       db = defaultFirebaseConfig.firestoreDatabaseId
         ? getFirestore(defaultApp, defaultFirebaseConfig.firestoreDatabaseId)
         : getFirestore(defaultApp);
-      auth = getAuth(defaultApp);
+      try {
+        auth = getAuth(defaultApp);
+      } catch {
+        // ignore in restricted WebView
+      }
       return {
         ok: true,
         projectId: defaultFirebaseConfig.projectId,
@@ -78,7 +88,11 @@ export function applyRuntimeFirebaseConfig(customConfig: CustomFirebaseConfig | 
     db = customConfig.firestoreDatabaseId
       ? getFirestore(customApp, customConfig.firestoreDatabaseId)
       : getFirestore(customApp);
-    auth = getAuth(customApp);
+    try {
+      auth = getAuth(customApp);
+    } catch {
+      // ignore in restricted WebView
+    }
     return {
       ok: true,
       projectId: customConfig.projectId,
@@ -121,8 +135,8 @@ export function handleFirestoreError(
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
+      userId: auth?.currentUser?.uid,
+      email: auth?.currentUser?.email,
     },
     operationType,
     path,
@@ -131,7 +145,7 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Test connection on boot and on demand
+// Test connection on demand
 export async function testConnection(): Promise<{
   connected: boolean;
   projectId: string;
@@ -178,5 +192,4 @@ export async function testConnection(): Promise<{
   }
 }
 
-testConnection();
 

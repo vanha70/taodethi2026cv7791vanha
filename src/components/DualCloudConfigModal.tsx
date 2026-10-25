@@ -35,12 +35,14 @@ interface DualCloudConfigModalProps {
   isOpen: boolean;
   onClose: () => void;
   onConfigSaved?: (summaryMessage: string) => void;
+  onConfigUpdated?: () => void;
 }
 
 export const DualCloudConfigModal: React.FC<DualCloudConfigModalProps> = ({
   isOpen,
   onClose,
   onConfigSaved,
+  onConfigUpdated,
 }) => {
   const [activeTab, setActiveTab] = useState<'firebase' | 'google_sheets'>('firebase');
 
@@ -166,9 +168,8 @@ export const DualCloudConfigModal: React.FC<DualCloudConfigModalProps> = ({
 
     setIsUsingCustomFb(true);
     await handleCheckFirebaseConnection();
-    if (onConfigSaved) {
-      onConfigSaved(`Đã lưu cấu hình Firebase (Project: ${newConfig.projectId})!`);
-    }
+    onConfigSaved?.(`Đã lưu cấu hình Firebase (Project: ${newConfig.projectId})!`);
+    onConfigUpdated?.();
   };
 
   const handleRestoreDefaultFirebase = async () => {
@@ -184,9 +185,8 @@ export const DualCloudConfigModal: React.FC<DualCloudConfigModalProps> = ({
     setFbFirestoreDbId(activeFb.firestoreDatabaseId || '');
     setFbRawJsonInput(JSON.stringify(activeFb, null, 2));
     await handleCheckFirebaseConnection();
-    if (onConfigSaved) {
-      onConfigSaved(`Đã khôi phục cấu hình Firebase mặc định (${activeFb.projectId})!`);
-    }
+    onConfigSaved?.(`Đã khôi phục cấu hình Firebase mặc định (${activeFb.projectId})!`);
+    onConfigUpdated?.();
   };
 
   const handleTestGoogleAppsScript = async () => {
@@ -211,16 +211,16 @@ export const DualCloudConfigModal: React.FC<DualCloudConfigModalProps> = ({
           message:
             'Đã lưu đường dẫn Google Apps Script Web App URL! Hệ thống sẽ tự động lưu đề song song (Dual Save) và đồng bộ điểm vào Google Sheets.',
         });
-        if (onConfigSaved) {
-          onConfigSaved(
-            'Đã kích hoạt Lưu Trữ Đám Mây Kép (Firebase + Google Sheets & Google Drive)!'
-          );
-        }
+        onConfigSaved?.(
+          'Đã kích hoạt Lưu Trữ Đám Mây Kép (Firebase + Google Sheets & Google Drive)!'
+        );
+        onConfigUpdated?.();
       } else {
         setGasStatus({
           connected: false,
           message: 'Đã xóa đường dẫn Web App URL. Hệ thống hiện chỉ sử dụng Firebase.',
         });
+        onConfigUpdated?.();
       }
     } finally {
       setIsSavingGas(false);

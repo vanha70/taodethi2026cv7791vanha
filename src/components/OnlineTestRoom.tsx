@@ -84,70 +84,74 @@ function createSmartShuffledExam(
   examVariantCode: string;
 } {
   const fixedItemLabels: ('a' | 'b' | 'c' | 'd')[] = ['a', 'b', 'c', 'd'];
+  const rawPart1 = Array.isArray(sourceExam?.part1) ? sourceExam.part1 : [];
+  const rawPart2 = Array.isArray(sourceExam?.part2) ? sourceExam.part2 : [];
+  const rawPart3 = Array.isArray(sourceExam?.part3) ? sourceExam.part3 : [];
 
   if (!enableShuffle) {
     return {
-      part1: sourceExam.part1.map((q, idx) => {
-        const imgSrc = q.image || q.imageUrl;
+      part1: rawPart1.map((q, idx) => {
+        const imgSrc = q?.image || q?.imageUrl;
         return {
           ...q,
           id: idx + 1,
-          content: stripLeakedAnswerMarkers(q.content),
+          content: stripLeakedAnswerMarkers(q?.content || ''),
           ...(imgSrc ? { image: imgSrc, imageUrl: imgSrc } : {}),
           options: {
-            A: stripLeakedAnswerMarkers(q.options.A),
-            B: stripLeakedAnswerMarkers(q.options.B),
-            C: stripLeakedAnswerMarkers(q.options.C),
-            D: stripLeakedAnswerMarkers(q.options.D),
+            A: stripLeakedAnswerMarkers(q?.options?.A || ''),
+            B: stripLeakedAnswerMarkers(q?.options?.B || ''),
+            C: stripLeakedAnswerMarkers(q?.options?.C || ''),
+            D: stripLeakedAnswerMarkers(q?.options?.D || ''),
           },
         };
       }),
-      part2: sourceExam.part2.map((q, idx) => {
-        const imgSrc = q.image || q.imageUrl;
+      part2: rawPart2.map((q, idx) => {
+        const imgSrc = q?.image || q?.imageUrl;
+        const safeItems = Array.isArray(q?.items) ? q.items : [];
         return {
           ...q,
           id: idx + 1,
-          content: stripLeakedAnswerMarkers(q.content),
+          content: stripLeakedAnswerMarkers(q?.content || ''),
           ...(imgSrc ? { image: imgSrc, imageUrl: imgSrc } : {}),
-          items: q.items.map((it, itemIdx) => ({
+          items: safeItems.map((it, itemIdx) => ({
             ...it,
-            label: fixedItemLabels[itemIdx] || it.label,
-            text: stripLeakedAnswerMarkers(it.text),
+            label: fixedItemLabels[itemIdx] || it?.label || 'a',
+            text: stripLeakedAnswerMarkers(it?.text || ''),
           })),
         };
       }),
-      part3: sourceExam.part3.map((q, idx) => {
-        const imgSrc = q.image || q.imageUrl;
+      part3: rawPart3.map((q, idx) => {
+        const imgSrc = q?.image || q?.imageUrl;
         return {
           ...q,
           id: idx + 1,
-          content: stripLeakedAnswerMarkers(q.content),
+          content: stripLeakedAnswerMarkers(q?.content || ''),
           ...(imgSrc ? { image: imgSrc, imageUrl: imgSrc } : {}),
         };
       }),
-      examVariantCode: sourceExam.metadata.examCode || '101',
+      examVariantCode: sourceExam?.metadata?.examCode || '101',
     };
   }
 
   // 1. Shuffle Part I questions (re-indexed 1..18) and shuffle A, B, C, D (unless aligned with PDF slice image)
-  const shuffledPart1: Part1Question[] = shuffleArray(sourceExam.part1).map((q, idx) => {
-    const shouldKeepOriginalABCD = keepOptionsAlignedWithPdfSlice && Boolean(q.pdfSliceUrl);
+  const shuffledPart1: Part1Question[] = shuffleArray(rawPart1).map((q, idx) => {
+    const shouldKeepOriginalABCD = keepOptionsAlignedWithPdfSlice && Boolean(q?.pdfSliceUrl);
     const permuted = shouldKeepOriginalABCD
       ? {
           options: {
-            A: stripLeakedAnswerMarkers(q.options.A),
-            B: stripLeakedAnswerMarkers(q.options.B),
-            C: stripLeakedAnswerMarkers(q.options.C),
-            D: stripLeakedAnswerMarkers(q.options.D),
+            A: stripLeakedAnswerMarkers(q?.options?.A || ''),
+            B: stripLeakedAnswerMarkers(q?.options?.B || ''),
+            C: stripLeakedAnswerMarkers(q?.options?.C || ''),
+            D: stripLeakedAnswerMarkers(q?.options?.D || ''),
           },
-          correctAnswer: q.correctAnswer,
+          correctAnswer: q?.correctAnswer || 'A',
         }
       : permutePart1QuestionOptions(q, shuffleArray);
-    const imgSrc = q.image || q.imageUrl;
+    const imgSrc = q?.image || q?.imageUrl;
     return {
       ...q,
       id: idx + 1,
-      content: stripLeakedAnswerMarkers(q.content),
+      content: stripLeakedAnswerMarkers(q?.content || ''),
       ...(imgSrc ? { image: imgSrc, imageUrl: imgSrc } : {}),
       options: permuted.options,
       correctAnswer: permuted.correctAnswer,
@@ -155,33 +159,34 @@ function createSmartShuffledExam(
   });
 
   // 2. Shuffle Part II questions (re-indexed 1..4) and optionally shuffle statements a), b), c), d)
-  const shuffledPart2: Part2Question[] = shuffleArray(sourceExam.part2).map((q, idx) => {
+  const shuffledPart2: Part2Question[] = shuffleArray(rawPart2).map((q, idx) => {
+    const safeItems = Array.isArray(q?.items) ? q.items : [];
     const shouldKeepOriginalItems =
-      !shufflePart2SubItems || (keepOptionsAlignedWithPdfSlice && Boolean(q.pdfSliceUrl));
-    const sourceItems = shouldKeepOriginalItems ? [...q.items] : shuffleArray(q.items);
+      !shufflePart2SubItems || (keepOptionsAlignedWithPdfSlice && Boolean(q?.pdfSliceUrl));
+    const sourceItems = shouldKeepOriginalItems ? [...safeItems] : shuffleArray(safeItems);
     const permutedItems = sourceItems.map((it, itemIdx) => ({
       ...it,
-      label: fixedItemLabels[itemIdx] || it.label,
-      text: stripLeakedAnswerMarkers(it.text),
+      label: fixedItemLabels[itemIdx] || it?.label || 'a',
+      text: stripLeakedAnswerMarkers(it?.text || ''),
     }));
-    const imgSrc = q.image || q.imageUrl;
+    const imgSrc = q?.image || q?.imageUrl;
 
     return {
       ...q,
       id: idx + 1,
-      content: stripLeakedAnswerMarkers(q.content),
+      content: stripLeakedAnswerMarkers(q?.content || ''),
       ...(imgSrc ? { image: imgSrc, imageUrl: imgSrc } : {}),
       items: permutedItems,
     };
   });
 
   // 3. Shuffle Part III questions (re-indexed 1..6)
-  const shuffledPart3: Part3Question[] = shuffleArray(sourceExam.part3).map((q, idx) => {
-    const imgSrc = q.image || q.imageUrl;
+  const shuffledPart3: Part3Question[] = shuffleArray(rawPart3).map((q, idx) => {
+    const imgSrc = q?.image || q?.imageUrl;
     return {
       ...q,
       id: idx + 1,
-      content: stripLeakedAnswerMarkers(q.content),
+      content: stripLeakedAnswerMarkers(q?.content || ''),
       ...(imgSrc ? { image: imgSrc, imageUrl: imgSrc } : {}),
     };
   });
@@ -218,7 +223,7 @@ export const OnlineTestRoom: React.FC<OnlineTestRoomProps> = ({
   roomId,
   roomCode,
 }) => {
-  const initialTotalSeconds = Math.max(60, (exam.metadata.durationMinutes || 45) * 60);
+  const initialTotalSeconds = Math.max(60, (exam?.metadata?.durationMinutes || 45) * 60);
   const [totalDurationSeconds, setTotalDurationSeconds] = useState<number>(initialTotalSeconds);
   const [timeLeft, setTimeLeft] = useState<number>(initialTotalSeconds);
   const [isPaused, setIsPaused] = useState<boolean>(false);
