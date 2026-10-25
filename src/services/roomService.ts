@@ -29,6 +29,14 @@ export interface ExamRoomDoc {
   durationMinutes: number;
   status: 'open' | 'closed';
   teacherName: string;
+  createdBy?: {
+    username: string;
+    fullName: string;
+    role: 'admin' | 'teacher';
+    schoolOrDepartment?: string;
+  };
+  createdByUsername?: string;
+  createdByName?: string;
   allowReview: boolean;
   createdAt: string;
   totalQuestions?: number;
@@ -644,7 +652,10 @@ function normalizeRoomDoc(raw: any, docId: string): ExamRoomDoc {
     duration: resolvedDuration,
     durationMinutes: resolvedDuration,
     status: raw.status === 'closed' ? 'closed' : 'open',
-    teacherName: raw.teacherName || 'Giáo viên',
+    teacherName: raw.teacherName || raw.createdByName || raw.createdBy?.fullName || 'Giáo viên',
+    createdBy: raw.createdBy || undefined,
+    createdByUsername: raw.createdByUsername || raw.createdBy?.username || '',
+    createdByName: raw.createdByName || raw.createdBy?.fullName || raw.teacherName || '',
     allowReview: raw.allowReview !== undefined ? Boolean(raw.allowReview) : true,
     createdAt: raw.createdAt || new Date().toISOString(),
     totalQuestions: raw.totalQuestions ?? totalQuestions,
@@ -710,7 +721,13 @@ export async function createExamRoom(
   allowReview: boolean = true,
   customRoomCode?: string,
   targetClass?: string,
-  onProgress?: (stepMessage: string) => void
+  onProgress?: (stepMessage: string) => void,
+  creatorInfo?: {
+    username: string;
+    fullName: string;
+    role: 'admin' | 'teacher';
+    schoolOrDepartment?: string;
+  }
 ): Promise<ExamRoomDoc> {
   const cleanCustom = customRoomCode ? customRoomCode.trim() : '';
   const roomCode = isValid4DigitCode(cleanCustom)
@@ -777,6 +794,17 @@ export async function createExamRoom(
   // Check if Google Apps Script Web App URL is configured
   const configuredGasUrl = getConfiguredGoogleAppsScriptUrl();
 
+  const resolvedCreator = creatorInfo
+    ? {
+        username: creatorInfo.username.trim().toLowerCase(),
+        fullName: creatorInfo.fullName.trim(),
+        role: creatorInfo.role,
+        ...(creatorInfo.schoolOrDepartment
+          ? { schoolOrDepartment: creatorInfo.schoolOrDepartment.trim() }
+          : {}),
+      }
+    : undefined;
+
   // Full room object (with all images) for immediate return, Google Drive JSON, & localStorage backup
   let fullRoomObject: ExamRoomDoc = sanitizeForFirestore(
     normalizeRoomDoc(
@@ -793,7 +821,14 @@ export async function createExamRoom(
         duration: resolvedDuration,
         durationMinutes: resolvedDuration,
         status: 'open',
-        teacherName: teacherName || 'Giáo viên',
+        teacherName: resolvedCreator?.fullName || teacherName || 'Giáo viên',
+        ...(resolvedCreator
+          ? {
+              createdBy: resolvedCreator,
+              createdByUsername: resolvedCreator.username,
+              createdByName: resolvedCreator.fullName,
+            }
+          : {}),
         allowReview: Boolean(allowReview),
         createdAt: nowIso,
         totalQuestions,
@@ -2273,6 +2308,7 @@ export const SAMPLE_GOOGLE_APPS_SCRIPT_CODE_GS = `/**
 var DRIVE_FOLDER_NAME = 'TAODETHI_2026_EXAMS';
 var SHEET_EXAMS = 'DanhSachDeThi';
 var SHEET_RESULTS = 'KetQuaThi';
+var SHEET_TEACHERS = 'TaiKhoanGiaoVien';
 
 function getOrCreateExamFolder_() {
   var folders = DriveApp.getFoldersByName(DRIVE_FOLDER_NAME);
@@ -2303,7 +2339,7 @@ function jsonResponse_(obj) {
 }
 
 /**
- * Xử lý yêu cầu GET (Kiểm tra kết nối, Tải đề thi dự phòng Smart Failover, Tải danh sách đề & Bảng điểm)
+ * Xử lý yêu cầu GET (Kiểm tra kết nối, Tải đề thi dự phòng Smart Failover, Tải danh sách đề, Bảng điểm & Tài khoản GV)
  */
 function doGet(e) {
   try {
@@ -2314,7 +2350,7 @@ function doGet(e) {
       return jsonResponse_({
         ok: true,
         status: 'connected',
-        message: 'Đã kết nối Google Sheets & Google Drive thành công! (Sẵn sàng lưu Exam_{roomCode}.json, DanhSachDeThi & KetQuaThi)'
+        message: 'Đã kết nối Google Sheets & Google Drive thành công! (Sẵn sàng lưu Exam_{roomCode}.json, DanhSachDeThi, KetQuaThi & TaiKhoanGiaoVien)'
       });
     }
 
@@ -2343,7 +2379,7 @@ function doGet(e) {
 
     if (action === 'listExams') {
       var examSheet = getOrCreateSheet_(SHEET_EXAMS, [
-        'Thời gian cập nhật', 'Mã phòng', 'Tên đề thi', 'Khối/Lớp', 'Thời gian (phút)', 'Tổng số câu', 'Trạng thái', 'File Drive ID', 'Link File JSON Drive'
+        'Thời gian cập nhật', 'Mã phòng', 'Tên đề thi', 'Khối/Lớp', 'Thời gian (phút)', 'Tổng số câu', 'Trạng thái', 'File Drive ID', 'Link File JSON Drive', 'Người tạo (Username)', 'Họ tên Giáo viên'
       ]);
       var values = examSheet.getDataRange().getValues();
       var exams = [];
@@ -2359,11 +2395,36 @@ function doGet(e) {
             totalQuestions: Number(row[5] || 28),
             status: String(row[6] || 'open'),
             googleDriveFileId: String(row[7] || ''),
-            googleDriveFileUrl: String(row[8] || '')
+            googleDriveFileUrl: String(row[8] || ''),
+            createdByUsername: String(row[9] || ''),
+            createdByName: String(row[10] || '')
           });
         }
       }
       return jsonResponse_({ ok: true, exams: exams });
+    }
+
+    if (action === 'listTeachers') {
+      var tSheet = getOrCreateSheet_(SHEET_TEACHERS, [
+        'Cập nhật lúc', 'Tên đăng nhập (Username)', 'Mật khẩu', 'Họ và tên Giáo viên', 'Trường / Tổ bộ môn', 'Quyền hạn (role)', 'Trạng thái (status)'
+      ]);
+      var tRows = tSheet.getDataRange().getValues();
+      var teachers = [];
+      for (var t = 1; t < tRows.length; t++) {
+        var tr = tRows[t];
+        if (tr[1]) {
+          teachers.push({
+            updatedAt: tr[0],
+            username: String(tr[1] || '').trim().toLowerCase(),
+            password: String(tr[2] || ''),
+            fullName: String(tr[3] || ''),
+            schoolOrDepartment: String(tr[4] || ''),
+            role: String(tr[5] || 'teacher'),
+            status: String(tr[6] || 'active')
+          });
+        }
+      }
+      return jsonResponse_({ ok: true, teachers: teachers });
     }
 
     if (action === 'getSubmissions') {
@@ -2402,7 +2463,7 @@ function doGet(e) {
 }
 
 /**
- * Xử lý yêu cầu POST (Lưu Đề Thi lên Google Drive + DanhSachDeThi VÀ Ghi Bảng Điểm vào KetQuaThi)
+ * Xử lý yêu cầu POST (Lưu Đề Thi lên Google Drive + DanhSachDeThi, Ghi Bảng Điểm vào KetQuaThi & Đồng bộ Tài khoản GV)
  */
 function doPost(e) {
   try {
@@ -2427,7 +2488,7 @@ function doPost(e) {
       }
 
       var examSheet = getOrCreateSheet_(SHEET_EXAMS, [
-        'Thời gian cập nhật', 'Mã phòng', 'Tên đề thi', 'Khối/Lớp', 'Thời gian (phút)', 'Tổng số câu', 'Trạng thái', 'File Drive ID', 'Link File JSON Drive'
+        'Thời gian cập nhật', 'Mã phòng', 'Tên đề thi', 'Khối/Lớp', 'Thời gian (phút)', 'Tổng số câu', 'Trạng thái', 'File Drive ID', 'Link File JSON Drive', 'Người tạo (Username)', 'Họ tên Giáo viên'
       ]);
 
       var data = examSheet.getDataRange().getValues();
@@ -2439,6 +2500,10 @@ function doPost(e) {
         }
       }
 
+      var roomObj = body.roomData || {};
+      var creatorUsername = roomObj.createdByUsername || (roomObj.createdBy && roomObj.createdBy.username) || 'admin';
+      var creatorFullName = roomObj.createdByName || (roomObj.createdBy && roomObj.createdBy.fullName) || roomObj.teacherName || 'GV: VANHA';
+
       var rowValues = [
         new Date().toLocaleString('vi-VN'),
         roomCode,
@@ -2448,7 +2513,9 @@ function doPost(e) {
         body.totalQuestions || 28,
         body.status || 'open',
         savedFile.getId(),
-        savedFile.getUrl()
+        savedFile.getUrl(),
+        creatorUsername,
+        creatorFullName
       ];
 
       if (foundRowIndex > 0) {
@@ -2488,6 +2555,51 @@ function doPost(e) {
       return jsonResponse_({
         ok: true,
         message: 'Đã ghi điểm của học sinh vào sheet KetQuaThi!'
+      });
+    }
+
+    // 3. ĐỒNG BỘ TÀI KHOẢN GIÁO VIÊN / ADMIN VÀO TRANG TÍNH TaiKhoanGiaoVien
+    if (action === 'syncTeacherAccount') {
+      var tSheet = getOrCreateSheet_(SHEET_TEACHERS, [
+        'Cập nhật lúc', 'Tên đăng nhập (Username)', 'Mật khẩu', 'Họ và tên Giáo viên', 'Trường / Tổ bộ môn', 'Quyền hạn (role)', 'Trạng thái (status)'
+      ]);
+      var targetUser = String(body.username || '').trim().toLowerCase();
+      var subAction = body.subAction || 'upsert';
+      var tData = tSheet.getDataRange().getValues();
+      var foundIdx = -1;
+      for (var k = 1; k < tData.length; k++) {
+        if (String(tData[k][1]).trim().toLowerCase() === targetUser) {
+          foundIdx = k + 1;
+          break;
+        }
+      }
+
+      if (subAction === 'delete') {
+        if (foundIdx > 0) {
+          tSheet.deleteRow(foundIdx);
+        }
+        return jsonResponse_({ ok: true, message: 'Đã xóa tài khoản ' + targetUser + ' khỏi Google Sheets!' });
+      }
+
+      var tRow = [
+        body.updatedAt || new Date().toLocaleString('vi-VN'),
+        targetUser,
+        String(body.password || ''),
+        String(body.fullName || ''),
+        String(body.schoolOrDepartment || ''),
+        String(body.role || 'teacher'),
+        String(body.status || 'active')
+      ];
+
+      if (foundIdx > 0) {
+        tSheet.getRange(foundIdx, 1, 1, tRow.length).setValues([tRow]);
+      } else {
+        tSheet.appendRow(tRow);
+      }
+
+      return jsonResponse_({
+        ok: true,
+        message: 'Đã đồng bộ tài khoản giáo viên ' + targetUser + ' lên sheet TaiKhoanGiaoVien!'
       });
     }
 

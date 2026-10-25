@@ -26,11 +26,21 @@ import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import { OnlineRoomManager } from './components/OnlineRoomManager';
 import { WordExportModal } from './components/WordExportModal';
 import { DualCloudConfigModal } from './components/DualCloudConfigModal';
+import { AuthLoginModal } from './components/AuthLoginModal';
+import { TeacherManagementModal } from './components/TeacherManagementModal';
 import {
   ExamRoomDoc,
   extractRoomCodeFromLocation,
   isStudentPortalLocation,
 } from './services/roomService';
+import {
+  TeacherAccountDoc,
+  loadSavedAuthSession,
+  logoutAuthSession,
+  ensureSuperAdminInitializedOnCloud,
+  subscribeToTeacherAccounts,
+  normalizeUsername,
+} from './services/authService';
 import { safeLocalStorage } from './utils/browserSafeguards';
 
 const STORAGE_KEY = 'taodethi2026_exam_state';
@@ -49,6 +59,14 @@ export default function App() {
     return sampleChemistry12Exam;
   });
 
+  // Current authenticated Teacher / Admin user (null = Student / Unauthenticated visitor)
+  const [currentUser, setCurrentUser] = useState<TeacherAccountDoc | null>(() =>
+    loadSavedAuthSession()
+  );
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState<boolean>(false);
+  const [loginModalMode, setLoginModalMode] = useState<'login' | 'change_password'>('login');
+  const [isTeacherMgmtModalOpen, setIsTeacherMgmtModalOpen] = useState<boolean>(false);
+
   const [urlRoomCode, setUrlRoomCode] = useState<string | null>(() =>
     extractRoomCodeFromLocation()
   );
@@ -57,7 +75,7 @@ export default function App() {
   );
 
   const [activeTab, setActiveTab] = useState<'editor' | 'matrix' | 'test' | 'preview' | 'rooms'>(
-    () => (isStudentPortalLocation() ? 'rooms' : 'editor')
+    () => (isStudentPortalLocation() || !loadSavedAuthSession() ? 'rooms' : 'editor')
   );
   const [studentSession, setStudentSession] = useState<{
     room: ExamRoomDoc;
@@ -76,6 +94,38 @@ export default function App() {
     return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
   });
   const [isSaving, setIsSaving] = useState<boolean>(false);
+
+  // Initialize default Super Admin (`admin` / `vanha`) in background & watch if current teacher account gets locked
+  useEffect(() => {
+    ensureSuperAdminInitializedOnCloud().catch(() => {
+      // offline-first
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const unsubscribe = subscribeToTeacherAccounts((accounts) => {
+      const found = accounts.find(
+        (a) => normalizeUsername(a.username) === normalizeUsername(currentUser.username)
+      );
+      if (found) {
+        if (found.status === 'locked' && found.role !== 'admin') {
+          logoutAuthSession();
+          setCurrentUser(null);
+          setIsStudentPortalMode(true);
+          setActiveTab('rooms');
+          showToast('Tài khoản của bạn đã bị Quản trị viên tạm khóa quyền truy cập!');
+        } else if (
+          found.fullName !== currentUser.fullName ||
+          found.role !== currentUser.role ||
+          found.password !== currentUser.password
+        ) {
+          setCurrentUser(found);
+        }
+      }
+    });
+    return () => unsubscribe();
+  }, [currentUser?.username]);
 
   // Auto save to safeLocalStorage with immediate visual feedback
   useEffect(() => {
@@ -286,6 +336,10 @@ export default function App() {
     (safeExam.part3?.length ?? 0) +
     (safeExam.essay?.length ?? 0);
 
+  // Security Gate: If not logged in (or explicitly opening student link ?mode=student&room=XXXX),
+  // lock out Teacher/Admin views and only show the Student Portal (`CỔNG VÀO PHÒNG THI TRỰC TUYẾN`)
+  const isLockedToStudentPortal = !currentUser || isStudentPortalMode;
+
   return (
     <div className="min-h-[100dvh] bg-slate-50 text-slate-900 flex flex-col font-sans overflow-x-clip">
       {/* Toast Notification */}
@@ -296,8 +350,8 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Top Header (Completely hidden in Independent Student Portal Mode or when Student is taking an exam) */}
-      {!isStudentPortalMode && !studentSession && (
+      {/* Main Top Header (Only rendered when logged in as Teacher/Admin and not in Student Portal / Test mode) */}
+      {!isLockedToStudentPortal && !studentSession && (
         <ExamHeader
           metadata={safeExam.metadata}
           onUpdateMetadata={(meta) => setExam({ ...safeExam, metadata: meta })}
@@ -314,13 +368,25 @@ export default function App() {
           isSaving={isSaving}
           onOpenShortcutsModal={() => setIsShortcutsModalOpen(true)}
           onOpenCloudConfigModal={() => setIsCloudConfigModalOpen(true)}
+          currentUser={currentUser}
+          onOpenTeacherManagementModal={() => setIsTeacherMgmtModalOpen(true)}
+          onOpenChangePasswordModal={() => {
+            setLoginModalMode('change_password');
+            setIsLoginModalOpen(true);
+          }}
+          onLogout={() => {
+            logoutAuthSession();
+            setCurrentUser(null);
+            setActiveTab('rooms');
+            showToast('Đã đăng xuất khỏi tài khoản Giáo viên / Admin!');
+          }}
         />
       )}
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {/* Quick Header Config Bar (Editable Title, School, Time) - Hidden in Student Mode */}
-        {!isStudentPortalMode && !studentSession && activeTab !== 'test' && (
+        {!isLockedToStudentPortal && !studentSession && activeTab !== 'test' && (
           <div className="mb-6 bg-white p-4 rounded-xl border border-slate-200/90 shadow-2xs flex flex-wrap items-center justify-between gap-3 text-xs text-slate-700 print:hidden">
             <div className="flex flex-wrap items-center gap-3">
               <span className="font-bold text-slate-900">{safeExam.metadata?.schoolName}</span>
@@ -338,6 +404,15 @@ export default function App() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              {currentUser?.role === 'admin' && (
+                <button
+                  onClick={() => setIsTeacherMgmtModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 text-xs font-extrabold text-amber-950 bg-amber-300 hover:bg-amber-400 px-3 py-1.5 rounded-lg border border-amber-500/60 transition-colors cursor-pointer"
+                >
+                  <span>👥 Quản lý Giáo viên (Cấp quyền)</span>
+                </button>
+              )}
+
               <button
                 onClick={() => setIsRawImportOpen(true)}
                 className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-900 bg-emerald-100 hover:bg-emerald-200 px-3 py-1.5 rounded-lg border border-emerald-300 transition-colors cursor-pointer"
@@ -371,7 +446,7 @@ export default function App() {
         )}
 
         {/* TAB 1: QUESTION EDITOR */}
-        {!isStudentPortalMode && activeTab === 'editor' && (
+        {!isLockedToStudentPortal && activeTab === 'editor' && (
           <QuestionEditor
             part1={safeExam.part1}
             part2={safeExam.part2}
@@ -386,7 +461,7 @@ export default function App() {
         )}
 
         {/* TAB 2: MATRIX & SPECIFICATION */}
-        {!isStudentPortalMode && activeTab === 'matrix' && (
+        {!isLockedToStudentPortal && activeTab === 'matrix' && (
           <MatrixSpecTable
             matrix={safeExam.matrix}
             specification={safeExam.specification}
@@ -418,7 +493,7 @@ export default function App() {
         )}
 
         {/* TAB 3: OFFICIAL EXAM PREVIEW (PRINTABLE) */}
-        {!isStudentPortalMode && activeTab === 'preview' && (
+        {!isLockedToStudentPortal && activeTab === 'preview' && (
           <OfficialExamPreview
             exam={safeExam}
             onPrint={handlePrint}
@@ -456,13 +531,24 @@ export default function App() {
         )}
 
         {/* TAB 5: ONLINE ROOM MANAGER & FIREBASE DASHBOARD (OR STANDALONE STUDENT PORTAL) */}
-        {(activeTab === 'rooms' || (isStudentPortalMode && !studentSession)) &&
+        {(activeTab === 'rooms' || (isLockedToStudentPortal && !studentSession)) &&
           activeTab !== 'test' && (
             <OnlineRoomManager
               currentExam={safeExam}
               initialRoomCode={urlRoomCode}
-              standaloneStudentMode={isStudentPortalMode}
+              standaloneStudentMode={isLockedToStudentPortal}
+              currentUser={currentUser}
+              onOpenLoginModal={() => {
+                setLoginModalMode('login');
+                setIsLoginModalOpen(true);
+              }}
+              onOpenTeacherManagementModal={() => setIsTeacherMgmtModalOpen(true)}
               onExitStandaloneStudentMode={() => {
+                if (!currentUser) {
+                  setLoginModalMode('login');
+                  setIsLoginModalOpen(true);
+                  return;
+                }
                 setIsStudentPortalMode(false);
                 if (typeof window !== 'undefined' && window.history?.replaceState) {
                   window.history.replaceState({}, '', window.location.pathname);
@@ -490,8 +576,43 @@ export default function App() {
           )}
       </main>
 
+      {/* AUTH LOGIN & PASSWORD CHANGE MODAL (ALWAYS AVAILABLE) */}
+      <AuthLoginModal
+        isOpen={isLoginModalOpen}
+        onClose={() => setIsLoginModalOpen(false)}
+        currentUser={currentUser}
+        initialMode={loginModalMode}
+        onLoginSuccess={(loggedInUser) => {
+          setCurrentUser(loggedInUser);
+          setIsStudentPortalMode(false);
+          if (typeof window !== 'undefined' && window.history?.replaceState) {
+            window.history.replaceState({}, '', window.location.pathname);
+          }
+          setActiveTab((prev) => (prev === 'test' ? 'rooms' : prev));
+          showToast(
+            `Đăng nhập thành công: ${loggedInUser.fullName} (${
+              loggedInUser.role === 'admin' ? 'Quản trị viên' : 'Giáo viên'
+            })!`
+          );
+        }}
+        onPasswordChanged={(updatedUser) => {
+          setCurrentUser(updatedUser);
+          showToast(`Đã cập nhật mật khẩu mới cho tài khoản ${updatedUser.fullName}!`);
+        }}
+      />
+
+      {/* ADMIN ONLY: TEACHER ACCOUNT MANAGEMENT MODAL */}
+      {currentUser?.role === 'admin' && (
+        <TeacherManagementModal
+          isOpen={isTeacherMgmtModalOpen}
+          onClose={() => setIsTeacherMgmtModalOpen(false)}
+          currentUser={currentUser}
+          onAccountUpdated={(msg) => showToast(msg)}
+        />
+      )}
+
       {/* METADATA EDIT MODAL */}
-      {isMetadataModalOpen && (
+      {isMetadataModalOpen && !isLockedToStudentPortal && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-200 p-6 space-y-4">
             <h3 className="text-base font-bold text-slate-900 border-b pb-2">
@@ -623,7 +744,7 @@ export default function App() {
       )}
 
       {/* TEACHER MODALS (NOT MOUNTED IN STUDENT PORTAL MODE TO PREVENT PDF.JS / MOBILE WEBVIEW CONFLICTS) */}
-      {!isStudentPortalMode && (
+      {!isLockedToStudentPortal && (
         <>
           <ShuffleModal
             isOpen={isShuffleOpen}

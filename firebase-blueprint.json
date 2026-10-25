@@ -206,6 +206,52 @@
         }
       },
       "required": ["roomCode", "chunkIndex"]
+    },
+    "TeacherAccount": {
+      "title": "TeacherAccount",
+      "description": "Admin or Teacher account with role-based permissions for exam creation and room management",
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "Unique lowercase username for login",
+          "maxLength": 100
+        },
+        "password": {
+          "type": "string",
+          "description": "Account password",
+          "maxLength": 200
+        },
+        "fullName": {
+          "type": "string",
+          "description": "Display full name of the teacher or admin",
+          "maxLength": 200
+        },
+        "schoolOrDepartment": {
+          "type": "string",
+          "description": "School or department name",
+          "maxLength": 200
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "teacher"],
+          "description": "Role permission level"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "locked"],
+          "description": "Whether the account is active or locked"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp in ISO format"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last update timestamp in ISO format"
+        }
+      },
+      "required": ["username", "role", "status"]
     }
   },
   "firestore": {
@@ -274,6 +320,18 @@
         "$ref": "#/entities/AppSettings"
       },
       "description": "Application settings including Public App URL for student links"
+    },
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/TeacherAccount"
+      },
+      "description": "Super Admin and user accounts (e.g. users/admin)"
+    },
+    "/teacher_accounts/{accountId}": {
+      "schema": {
+        "$ref": "#/entities/TeacherAccount"
+      },
+      "description": "Granted teacher and admin accounts synchronized across devices"
     }
   }
 }

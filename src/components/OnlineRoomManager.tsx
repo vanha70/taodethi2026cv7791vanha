@@ -56,6 +56,11 @@ import {
   loadRoomFromLocalBackup,
   PUBLIC_APP_URL_STORAGE_KEY,
 } from '../services/roomService';
+import {
+  TeacherAccountDoc,
+  canUserManageExamRoom,
+  normalizeUsername,
+} from '../services/authService';
 import { copyTextToClipboard, safeLocalStorage } from '../utils/browserSafeguards';
 import { DualCloudConfigModal } from './DualCloudConfigModal';
 
@@ -63,6 +68,9 @@ interface OnlineRoomManagerProps {
   currentExam: ExamData;
   initialRoomCode?: string | null;
   standaloneStudentMode?: boolean;
+  currentUser?: TeacherAccountDoc | null;
+  onOpenLoginModal?: () => void;
+  onOpenTeacherManagementModal?: () => void;
   onExitStandaloneStudentMode?: () => void;
   onUpdateExamMetadata?: (examCode: string, grade: string, durationMinutes: number, examTitle: string) => void;
   onStudentStartTest: (
@@ -78,16 +86,20 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
   currentExam,
   initialRoomCode,
   standaloneStudentMode = false,
+  currentUser,
+  onOpenLoginModal,
+  onOpenTeacherManagementModal,
   onExitStandaloneStudentMode,
   onUpdateExamMetadata,
   onStudentStartTest,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'teacher' | 'student'>(
-    standaloneStudentMode || initialRoomCode ? 'student' : 'teacher'
+    standaloneStudentMode || initialRoomCode || !currentUser ? 'student' : 'teacher'
   );
 
   // Teacher states
   const [publishedExams, setPublishedExams] = useState<ExamRoomDoc[]>([]);
+  const [adminTeacherFilter, setAdminTeacherFilter] = useState<string>('ALL');
   const [roomSubmissionStats, setRoomSubmissionStats] = useState<
     Record<string, { count: number; avgScore: string }>
   >({});
@@ -159,10 +171,11 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
   const [isSearchingRoom, setIsSearchingRoom] = useState<boolean>(false);
   const [joinError, setJoinError] = useState<string | null>(null);
 
-  // Sync when initialRoomCode or standaloneStudentMode prop changes (e.g. student opens URL /?room=1003)
+  // Sync when initialRoomCode, standaloneStudentMode, or currentUser prop changes
   useEffect(() => {
-    if (standaloneStudentMode) {
+    if (standaloneStudentMode || !currentUser) {
       setActiveSubTab('student');
+      return;
     }
     if (initialRoomCode && initialRoomCode.trim()) {
       const clean = initialRoomCode.replace(/\D/g, '').slice(0, 4);
@@ -170,8 +183,10 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
       if (clean) {
         setJoinCode(clean);
       }
+      return;
     }
-  }, [initialRoomCode, standaloneStudentMode]);
+    setActiveSubTab('teacher');
+  }, [initialRoomCode, standaloneStudentMode, currentUser]);
 
   // Auto-lookup room details when student types a 4-digit code or arrives via ?room=1003
   useEffect(() => {
@@ -419,6 +434,38 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
         onUpdateExamMetadata(cleanCode, cleanClass, durationMinutes, cleanTitle);
       }
 
+      // Prevent a regular teacher from accidentally overwriting another teacher's room code
+      const existingWithSameCode = publishedExams.find((r) => r.roomCode === cleanCode);
+      if (
+        existingWithSameCode &&
+        currentUser &&
+        currentUser.role !== 'admin' &&
+        !canUserManageExamRoom(currentUser, existingWithSameCode)
+      ) {
+        setFormError(
+          `Mã phòng ${cleanCode} đã được tạo bởi giáo viên khác (${
+            existingWithSameCode.createdByName || existingWithSameCode.teacherName || 'Admin'
+          }). Vui lòng bấm "Tạo mã ngẫu nhiên" hoặc chọn mã 4 số khác!`
+        );
+        setIsCreating(false);
+        setPublishProgressMsg(null);
+        return;
+      }
+
+      const creatorInfo = currentUser
+        ? {
+            username: currentUser.username,
+            fullName: currentUser.fullName,
+            role: currentUser.role,
+            schoolOrDepartment: currentUser.schoolOrDepartment,
+          }
+        : {
+            username: 'admin',
+            fullName: 'GV: VANHA (Quản trị viên)',
+            role: 'admin' as const,
+            schoolOrDepartment: 'Quản trị hệ thống',
+          };
+
       const newRoom = await createExamRoom(
         {
           ...currentExam,
@@ -431,11 +478,12 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
           },
         },
         durationMinutes,
-        'Thầy: Nguyễn Văn Hà (0766.649.979)',
+        creatorInfo.fullName,
         allowReview,
         cleanCode,
         cleanClass,
-        (stepMsg) => setPublishProgressMsg(stepMsg)
+        (stepMsg) => setPublishProgressMsg(stepMsg),
+        creatorInfo
       );
 
       setActiveRoom(newRoom);
@@ -517,10 +565,14 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
     }
   };
 
-  // Toggle lock / unlock room
+  // Toggle lock / unlock room (Protected by teacher ownership or Admin role)
   const handleToggleRoomStatus = async (roomToToggle?: ExamRoomDoc) => {
     const target = roomToToggle || activeRoom;
     if (!target) return;
+    if (currentUser && !canUserManageExamRoom(currentUser, target)) {
+      setFormError('Bạn chỉ có quyền Đóng/Mở các phòng thi do chính tài khoản của mình tạo!');
+      return;
+    }
     const newStatus = target.status === 'open' ? 'closed' : 'open';
     try {
       await updateRoomStatus(target.roomCode || target.id, newStatus);
@@ -532,8 +584,12 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
     }
   };
 
-  // Delete published exam room
+  // Delete published exam room (Protected by teacher ownership or Admin role)
   const handleDeletePublishedRoom = async (room: ExamRoomDoc) => {
+    if (currentUser && !canUserManageExamRoom(currentUser, room)) {
+      setFormError('Bạn chỉ có quyền xóa các phòng thi do chính tài khoản của mình tạo!');
+      return;
+    }
     try {
       await deleteRoom(room.roomCode || room.id);
       if (activeRoom && activeRoom.roomCode === room.roomCode) {
@@ -646,10 +702,42 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
     (e) => e.roomCode === examCodeInput.trim()
   );
 
+  const isAdminUser = currentUser?.role === 'admin';
+
+  // Filter publishedExams according to role:
+  // - Admin: sees ALL rooms (with optional teacher filter)
+  // - Teacher: sees only rooms created by themselves (`canUserManageExamRoom(currentUser, room)`)
+  const scopedPublishedExams = publishedExams.filter((room) => {
+    if (!currentUser) return false;
+    if (isAdminUser) {
+      if (adminTeacherFilter === 'ALL') return true;
+      const ownerUser = normalizeUsername(
+        room.createdByUsername || room.createdBy?.username || 'admin'
+      );
+      return ownerUser === normalizeUsername(adminTeacherFilter);
+    }
+    return canUserManageExamRoom(currentUser, room);
+  });
+
+  // Distinct creators list for Admin filter dropdown
+  const distinctCreators = Array.from(
+    new Map(
+      publishedExams.map((r) => {
+        const u = normalizeUsername(r.createdByUsername || r.createdBy?.username || 'admin');
+        const label =
+          r.createdByName ||
+          r.createdBy?.fullName ||
+          r.teacherName ||
+          'GV: VANHA (Quản trị viên)';
+        return [u, { username: u, fullName: label }];
+      })
+    ).values()
+  );
+
   return (
     <div className="space-y-6">
-      {/* Top role switch tab (Hidden in Standalone Student Portal Mode) */}
-      {!standaloneStudentMode && (
+      {/* Top role switch tab (Hidden in Standalone Student Portal Mode or when not logged in) */}
+      {!standaloneStudentMode && currentUser && (
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -680,13 +768,15 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <div className="text-xs text-slate-500 flex items-center gap-2 bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded-lg border border-emerald-200">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span>
-                Dual Cloud Sync: <code className="font-mono font-bold">Firebase</code> +{' '}
-                <code className="font-mono font-bold">Google Sheets &amp; Drive</code>
-              </span>
-            </div>
+            {isAdminUser && onOpenTeacherManagementModal && (
+              <button
+                type="button"
+                onClick={onOpenTeacherManagementModal}
+                className="px-3.5 py-2 rounded-lg text-xs font-extrabold text-amber-950 bg-gradient-to-r from-amber-300 via-amber-400 to-yellow-300 hover:from-amber-400 hover:to-yellow-400 border border-amber-500/60 shadow-xs flex items-center gap-1.5 cursor-pointer transition-all"
+              >
+                <span>👥 Quản lý Giáo viên (Cấp quyền)</span>
+              </button>
+            )}
 
             <button
               type="button"
@@ -1385,7 +1475,7 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
             </div>
           </div>
 
-          {/* STEP 3: KHO ĐỀ KIỂM TRA ONLINE ĐÃ XUẤT BẢN (FIREBASE EXAMS REPOSITORY) */}
+          {/* STEP 3: KHO ĐỀ KIỂM TRA ONLINE ĐÃ XUẤT BẢN (FIREBASE EXAMS REPOSITORY - SCOPED BY ROLE) */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
             <div className="p-5 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
@@ -1394,28 +1484,58 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                 </div>
                 <div>
                   <h3 className="text-sm sm:text-base font-black uppercase tracking-wide">
-                    KHO ĐỀ KIỂM TRA ONLINE ĐÃ XUẤT BẢN ({publishedExams.length})
+                    {isAdminUser
+                      ? `KHO ĐỀ KIỂM TRA TOÀN HỆ THỐNG (${scopedPublishedExams.length} / ${publishedExams.length} ĐỀ)`
+                      : `KHO ĐỀ KIỂM TRA CỦA ${currentUser?.fullName?.toUpperCase() || 'GIÁO VIÊN'} (${scopedPublishedExams.length})`}
                   </h3>
                   <p className="text-xs text-slate-300">
-                    Quản lý tập trung trên Firebase <code className="font-mono text-amber-300">exam_rooms/&#123;roomCode&#125;</code> &amp; <code className="font-mono text-emerald-300">exam_submissions/&#123;roomCode&#125;/students</code> • Đóng/Mở phòng thi &amp; Thống kê bài nộp theo từng Mã phòng
+                    {isAdminUser ? (
+                      <>
+                        Quyền Quản trị viên (<code className="font-mono text-amber-300">Admin</code>): Nhìn thấy và quản lý toàn bộ phòng thi của tất cả giáo viên trên hệ thống.
+                      </>
+                    ) : (
+                      <>
+                        Kho đề cá nhân (<code className="font-mono text-emerald-300">createdBy: {currentUser?.username}</code>): Quản lý riêng các phòng thi do Thầy/Cô tạo mà không ảnh hưởng tới phòng thi của giáo viên khác.
+                      </>
+                    )}
                   </p>
                 </div>
               </div>
+
+              {isAdminUser && distinctCreators.length > 1 && (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-slate-300 font-semibold">Lọc theo Giáo viên:</span>
+                  <select
+                    value={adminTeacherFilter}
+                    onChange={(e) => setAdminTeacherFilter(e.target.value)}
+                    className="bg-slate-800 text-white border border-slate-600 rounded-lg px-2.5 py-1.5 font-bold text-xs focus:outline-none focus:border-amber-400"
+                  >
+                    <option value="ALL">Tất cả Giáo viên ({publishedExams.length} đề)</option>
+                    {distinctCreators.map((c) => (
+                      <option key={c.username} value={c.username}>
+                        {c.fullName} ({c.username})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
-            {publishedExams.length === 0 ? (
+            {scopedPublishedExams.length === 0 ? (
               <div className="p-10 text-center text-slate-500 space-y-2">
                 <p className="text-sm font-semibold text-slate-700">
-                  Chưa có đề kiểm tra nào trong Kho đề đã xuất bản
+                  {isAdminUser
+                    ? 'Chưa có đề kiểm tra nào trong Kho đề đã xuất bản'
+                    : `Tài khoản ${currentUser?.fullName} (${currentUser?.username}) chưa xuất bản phòng thi nào`}
                 </p>
                 <p className="text-xs text-slate-500">
                   Hãy nhập Mã đề 4 chữ số (ví dụ: 1003), chọn Lớp áp dụng ở form phía trên và bấm{' '}
-                  <strong>&quot;Xuất bản &amp; Lưu Firebase&quot;</strong>.
+                  <strong>&quot;Xuất bản &amp; Lưu Cloud Kép&quot;</strong>.
                 </p>
               </div>
             ) : (
               <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
-                {publishedExams.map((room) => {
+                {scopedPublishedExams.map((room) => {
                   const isSelected = activeRoom?.roomCode === room.roomCode;
                   const assignedClass = room.targetClass || room.grade || 'Khối 12';
                   const qCount =
@@ -1427,6 +1547,13 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                     count: 0,
                     avgScore: '0.00',
                   };
+                  const creatorDisplayName =
+                    room.createdByName ||
+                    room.createdBy?.fullName ||
+                    room.teacherName ||
+                    'GV: VANHA (Quản trị viên)';
+                  const creatorUsername =
+                    room.createdByUsername || room.createdBy?.username || 'admin';
 
                   return (
                     <div
@@ -1470,6 +1597,14 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                             {room.title}
                           </h4>
 
+                          {/* Creator Teacher Badge */}
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-900 border border-amber-200">
+                              <span>👨‍🏫 Người tạo: {creatorDisplayName}</span>
+                              <code className="font-mono text-[9px] text-amber-700">({creatorUsername})</code>
+                            </span>
+                          </div>
+
                           {/* DUAL CLOUD SAVE STATUS BADGES */}
                           <div className="flex flex-wrap items-center gap-1.5">
                             {room.savedFirebase !== false && (
@@ -1498,8 +1633,8 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                                   {syncingGoogleRoomCode === room.roomCode
                                     ? 'Đang lưu Google Drive...'
                                     : hasAppsScriptConfigured
-                                    ? 'Lưu thêm lên Google Drive/Sheets'
-                                    : 'Cấu hình Google Drive/Sheets'}
+                                      ? 'Lưu thêm lên Google Drive/Sheets'
+                                      : 'Cấu hình Google Drive/Sheets'}
                                 </span>
                               </button>
                             )}
@@ -1673,24 +1808,46 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
           STUDENT JOIN PORTAL: CỔNG VÀO PHÒNG THI TRỰC TUYẾN
           (3 MANDATORY FIELDS: 4-DIGIT ROOM CODE + FULL NAME + CLASS)
           ===================================================================== */}
-      {(standaloneStudentMode || activeSubTab === 'student') && (
-        <div className="bg-white rounded-3xl border-2 border-indigo-100 shadow-xl overflow-hidden max-w-xl mx-auto">
-          {/* Top Formal Banner */}
-          <div className="bg-gradient-to-r from-indigo-950 via-indigo-900 to-teal-900 text-white p-6 sm:p-8 text-center relative">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-emerald-400 to-teal-500 text-slate-950 flex items-center justify-center mx-auto mb-3 shadow-lg shadow-emerald-500/20">
-              <GraduationCap className="w-8 h-8" />
+      {(standaloneStudentMode || !currentUser || activeSubTab === 'student') && (
+        <div className="space-y-4">
+          {/* Top-right compact Teacher / Admin Login Bar when in Student Portal view */}
+          {(standaloneStudentMode || !currentUser) && (
+            <div className="max-w-xl mx-auto flex items-center justify-between gap-2 px-1">
+              <div className="flex items-center gap-2 text-xs text-slate-600 font-semibold">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span>Cổng thi trực tuyến dành cho Học sinh (Không cần tài khoản)</span>
+              </div>
+
+              {onOpenLoginModal && (
+                <button
+                  type="button"
+                  onClick={onOpenLoginModal}
+                  className="px-3.5 py-2 rounded-xl text-xs font-extrabold bg-slate-900 hover:bg-indigo-950 text-amber-300 border border-slate-700 shadow-sm flex items-center gap-1.5 cursor-pointer transition-all shrink-0"
+                  title="Đăng nhập dành cho Giáo viên & Quản trị viên (Admin) để mở khóa giao diện Tạo đề PDF & Quản lý phòng thi"
+                >
+                  <span>🔐 Đăng nhập Giáo viên / Admin</span>
+                </button>
+              )}
             </div>
-            <span className="inline-block px-3 py-0.5 rounded-full text-[11px] font-extrabold uppercase tracking-widest bg-white/10 text-emerald-300 border border-white/15 mb-2">
-              HỆ THỐNG KIỂM TRA ĐÁNH GIÁ TRỰC TUYẾN CHUẨN CV 7991
-            </span>
-            <h2 className="text-xl sm:text-2xl font-black tracking-tight uppercase">
-              CỔNG VÀO PHÒNG THI TRỰC TUYẾN
-            </h2>
-            <p className="text-xs text-indigo-200 mt-1.5 max-w-md mx-auto">
-              Học sinh vui lòng điền đầy đủ và chính xác <strong>Mã phòng thi (4 số)</strong>,{' '}
-              <strong>Họ và tên</strong> và <strong>Lớp</strong> trước khi bắt đầu tính giờ làm bài.
-            </p>
-          </div>
+          )}
+
+          <div className="bg-white rounded-3xl border-2 border-indigo-100 shadow-xl overflow-hidden max-w-xl mx-auto">
+            {/* Top Formal Banner */}
+            <div className="bg-gradient-to-r from-indigo-950 via-indigo-900 to-teal-900 text-white p-6 sm:p-8 text-center relative">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-emerald-400 to-teal-500 text-slate-950 flex items-center justify-center mx-auto mb-3 shadow-lg shadow-emerald-500/20">
+                <GraduationCap className="w-8 h-8" />
+              </div>
+              <span className="inline-block px-3 py-0.5 rounded-full text-[11px] font-extrabold uppercase tracking-widest bg-white/10 text-emerald-300 border border-white/15 mb-2">
+                HỆ THỐNG KIỂM TRA ĐÁNH GIÁ TRỰC TUYẾN CHUẨN CV 7991
+              </span>
+              <h2 className="text-xl sm:text-2xl font-black tracking-tight uppercase">
+                CỔNG VÀO PHÒNG THI TRỰC TUYẾN
+              </h2>
+              <p className="text-xs text-indigo-200 mt-1.5 max-w-md mx-auto">
+                Học sinh vui lòng điền đầy đủ và chính xác <strong>Mã phòng thi (4 số)</strong>,{' '}
+                <strong>Họ và tên</strong> và <strong>Lớp</strong> trước khi bắt đầu tính giờ làm bài.
+              </p>
+            </div>
 
           <div className="p-6 sm:p-8 space-y-5">
             {joinError && (
@@ -1867,19 +2024,32 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
                 <ChevronRight className="w-5 h-5" />
               </button>
 
-              {standaloneStudentMode && onExitStandaloneStudentMode && (
+              {standaloneStudentMode && (
                 <div className="pt-3 border-t border-slate-100 text-center">
-                  <button
-                    type="button"
-                    onClick={onExitStandaloneStudentMode}
-                    className="text-[11px] font-semibold text-slate-400 hover:text-indigo-600 underline cursor-pointer"
-                  >
-                    Dành cho Giáo viên: Chuyển về Giao diện Quản lý &amp; Soạn đề
-                  </button>
+                  {currentUser && onExitStandaloneStudentMode ? (
+                    <button
+                      type="button"
+                      onClick={onExitStandaloneStudentMode}
+                      className="text-xs font-bold text-indigo-600 hover:text-indigo-800 underline cursor-pointer"
+                    >
+                      Quay lại Giao diện Quản lý &amp; Soạn đề ({currentUser.fullName})
+                    </button>
+                  ) : (
+                    onOpenLoginModal && (
+                      <button
+                        type="button"
+                        onClick={onOpenLoginModal}
+                        className="text-xs font-bold text-slate-500 hover:text-indigo-700 underline cursor-pointer"
+                      >
+                        🔐 Dành cho Giáo viên / Admin: Đăng nhập để Tạo đề &amp; Quản lý phòng thi
+                      </button>
+                    )
+                  )}
                 </div>
               )}
             </div>
           </div>
+        </div>
         </div>
       )}
 

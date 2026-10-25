@@ -141,5 +141,19 @@ service cloud.firestore {
       allow create, update: if isValidId(settingId);
       allow delete: if isValidId(settingId);
     }
+
+    // Super Admin & User Accounts collection (e.g. users/admin)
+    match /users/{userId} {
+      allow get, list: if true;
+      allow create, update: if userId is string && userId.size() <= 128 && request.resource.data is map;
+      allow delete: if userId is string && userId.size() <= 128;
+    }
+
+    // Teacher Accounts collection (e.g. teacher_accounts/{username})
+    match /teacher_accounts/{accountId} {
+      allow get, list: if true;
+      allow create, update: if accountId is string && accountId.size() <= 128 && request.resource.data is map;
+      allow delete: if accountId is string && accountId.size() <= 128;
+    }
   }
 }
