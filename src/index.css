@@ -59,3 +59,25 @@ body {
   max-width: 100%;
   height: auto;
 }
+
+/* Smooth Top Marquee Banner Animation (Tầng 1) */
+@keyframes topBannerMarquee {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-top-marquee {
+  display: flex;
+  width: max-content;
+  animation: topBannerMarquee 28s linear infinite;
+}
+
+.animate-top-marquee:hover,
+.group-marquee:hover .animate-top-marquee {
+  animation-play-state: paused;
+}
+

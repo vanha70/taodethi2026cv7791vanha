@@ -768,16 +768,6 @@ export const OnlineRoomManager: React.FC<OnlineRoomManagerProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {isAdminUser && onOpenTeacherManagementModal && (
-              <button
-                type="button"
-                onClick={onOpenTeacherManagementModal}
-                className="px-3.5 py-2 rounded-lg text-xs font-extrabold text-amber-950 bg-gradient-to-r from-amber-300 via-amber-400 to-yellow-300 hover:from-amber-400 hover:to-yellow-400 border border-amber-500/60 shadow-xs flex items-center gap-1.5 cursor-pointer transition-all"
-              >
-                <span>👥 Quản lý Giáo viên (Cấp quyền)</span>
-              </button>
-            )}
-
             <button
               type="button"
               onClick={() => setIsCloudConfigModalOpen(true)}

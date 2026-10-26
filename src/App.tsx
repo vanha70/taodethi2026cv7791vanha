@@ -385,62 +385,144 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {/* Quick Header Config Bar (Editable Title, School, Time) - Hidden in Student Mode */}
+        {/* =====================================================================
+            TẦNG 4: KHUNG THÔNG TIN ĐỀ THI & THANH CÔNG CỤ CHUYÊN MÔN (ACTION CARD)
+            ===================================================================== */}
         {!isLockedToStudentPortal && !studentSession && activeTab !== 'test' && (
-          <div className="mb-6 bg-white p-4 rounded-xl border border-slate-200/90 shadow-2xs flex flex-wrap items-center justify-between gap-3 text-xs text-slate-700 print:hidden">
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="font-bold text-slate-900">{safeExam.metadata?.schoolName}</span>
-              <span className="text-slate-300">•</span>
-              <span className="font-semibold text-indigo-700">{safeExam.metadata?.examTitle}</span>
-              <span className="text-slate-300">•</span>
-              <span>{safeExam.metadata?.academicYear}</span>
-              <span className="text-slate-300">•</span>
-              <span className="bg-indigo-50 text-indigo-800 border border-indigo-200 px-2 py-0.5 rounded font-semibold">
-                ⏱ {safeExam.metadata?.durationMinutes} phút
-              </span>
-              <span className="bg-slate-100 text-slate-800 px-2 py-0.5 rounded font-medium">
-                Mã đề: {safeExam.metadata?.examCode || '101'}
-              </span>
+          <div className="mb-6 bg-white rounded-2xl shadow-sm border border-slate-200/80 p-4 space-y-3 text-xs text-slate-700 print:hidden">
+            {/* Hàng trên: Thông tin đề thi & Nút Chỉnh sửa thông tin đề thi */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
+                <span className="font-extrabold text-slate-900 text-xs sm:text-sm">
+                  {safeExam.metadata?.schoolName}
+                </span>
+                <span className="text-slate-300">•</span>
+                <span className="font-bold text-indigo-700 text-xs sm:text-sm">
+                  {safeExam.metadata?.examTitle}
+                </span>
+                <span className="text-slate-300">•</span>
+                <span className="font-medium text-slate-600">
+                  {safeExam.metadata?.academicYear}
+                </span>
+                <span className="text-slate-300">•</span>
+                <span className="bg-indigo-50 text-indigo-800 border border-indigo-200 px-2.5 py-0.5 rounded-lg font-bold">
+                  ⏱️ {safeExam.metadata?.durationMinutes} phút
+                </span>
+                <span className="bg-slate-100 text-slate-800 border border-slate-200 px-2.5 py-0.5 rounded-lg font-bold">
+                  Mã đề: {safeExam.metadata?.examCode || '101'}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsMetadataModalOpen(true)}
+                className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-xl border border-indigo-200/90 transition-colors cursor-pointer shrink-0"
+              >
+                <span>✏️ Chỉnh sửa thông tin đề thi</span>
+              </button>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              {currentUser?.role === 'admin' && (
+            {/* Hàng dưới: Các công cụ tác vụ đề thi (Gom nhóm theo màu sắc khoa học, không trùng lặp) */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-0.5">
+              {/* Nhóm 1: Nhóm Nhập đề & AI */}
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Nút chính nổi bật màu xanh lá/emerald */}
                 <button
-                  onClick={() => setIsTeacherMgmtModalOpen(true)}
-                  className="inline-flex items-center gap-1.5 text-xs font-extrabold text-amber-950 bg-amber-300 hover:bg-amber-400 px-3 py-1.5 rounded-lg border border-amber-500/60 transition-colors cursor-pointer"
+                  type="button"
+                  onClick={() => setIsRawImportOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-extrabold text-white bg-gradient-to-r from-emerald-600 via-emerald-500 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-sm shadow-emerald-200 transition-all cursor-pointer"
+                  title="Tải lên file PDF đề thi có sẵn đáp án (PDF.js + KaTeX mhchem + Cắt hình vẽ Canvas)"
                 >
-                  <span>👥 Quản lý Giáo viên (Cấp quyền)</span>
+                  <span>📄 Tải Đề PDF Có Đáp Án &amp; Tạo Bài Thi Online</span>
                 </button>
-              )}
 
-              <button
-                onClick={() => setIsRawImportOpen(true)}
-                className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-900 bg-emerald-100 hover:bg-emerald-200 px-3 py-1.5 rounded-lg border border-emerald-300 transition-colors cursor-pointer"
-                title="Tải lên file PDF đề thi có sẵn đáp án (PDF.js + KaTeX mhchem + Cắt hình vẽ)"
-              >
-                <FileText className="w-3.5 h-3.5 text-emerald-700" />
-                <span>Tải Đề PDF Có Đáp Án & Tạo Bài Thi Online</span>
-              </button>
+                {/* Tạo Đề AI */}
+                <button
+                  type="button"
+                  onClick={() => setIsAiModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-indigo-600 to-sky-600 hover:from-indigo-700 hover:to-sky-700 shadow-xs transition-all cursor-pointer"
+                  title="Phím tắt: Ctrl + G"
+                >
+                  <span>✨ Tạo Đề AI</span>
+                </button>
 
-              <button
-                onClick={() => {
-                  setActiveTab('matrix');
-                  showToast('Đã mở Trợ lý AI Gợi ý Phân bổ Mức độ Nhận thức!');
-                }}
-                className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-900 bg-amber-100 hover:bg-amber-200 px-3 py-1.5 rounded-lg border border-amber-300 transition-colors cursor-pointer"
-                title="AI tự động gợi ý phân bổ số lượng câu hỏi Nhận biết, Thông hiểu, Vận dụng, Vận dụng cao theo thời lượng & độ khó"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-amber-600" />
-                <span>AI Gợi Ý Phân Bổ Mức Độ</span>
-              </button>
+                {/* AI Gợi Ý Phân Bổ Mức Độ */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('matrix');
+                    showToast('Đã mở Trợ lý AI Gợi ý Phân bổ Mức độ Nhận thức!');
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-amber-950 bg-amber-100 hover:bg-amber-200 border border-amber-300 transition-colors cursor-pointer"
+                  title="AI tự động gợi ý phân bổ số lượng câu hỏi Nhận biết, Thông hiểu, Vận dụng, Vận dụng cao theo thời lượng & độ khó"
+                >
+                  <span>✨ AI Gợi Ý Phân Bổ Mức Độ</span>
+                </button>
 
-              <button
-                onClick={() => setIsMetadataModalOpen(true)}
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-200 transition-colors cursor-pointer"
-              >
-                <Settings className="w-3.5 h-3.5" />
-                <span>Chỉnh Sửa Thông Tin Đề Thi</span>
-              </button>
+                {/* Đề Mẫu (Hóa 12 / Toán 12) */}
+                <div className="inline-flex items-center bg-slate-100 rounded-xl p-1 border border-slate-200 text-xs">
+                  <span className="px-2 text-slate-600 font-bold">📚 Đề Mẫu:</span>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectSample('chem12')}
+                    className="px-2.5 py-1 rounded-lg font-bold text-slate-700 hover:text-indigo-700 hover:bg-white transition-colors cursor-pointer"
+                    title="Đề mẫu Hóa học 12 (Ester - Lipid - Carbohydrate)"
+                  >
+                    Hóa 12
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectSample('math12')}
+                    className="px-2.5 py-1 rounded-lg font-bold text-slate-700 hover:text-indigo-700 hover:bg-white transition-colors cursor-pointer"
+                    title="Đề mẫu Toán học 12 (Đạo hàm, Oxyz)"
+                  >
+                    Toán 12
+                  </button>
+                </div>
+              </div>
+
+              {/* Nhóm 2: Nhóm Xuất bản & In ấn */}
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Trộn Đề Thi */}
+                <button
+                  type="button"
+                  onClick={() => setIsShuffleOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200 transition-colors cursor-pointer"
+                  title="Trộn đề và tạo nhiều mã đề (Ctrl + Shift + S)"
+                >
+                  <span>🔀 Trộn Đề Thi</span>
+                </button>
+
+                {/* Xuất Word (.docx) */}
+                <button
+                  type="button"
+                  onClick={handleExportDocx}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 transition-colors cursor-pointer"
+                  title="Xuất file Word (Ctrl + Shift + E)"
+                >
+                  <span>📥 Xuất Word (.docx)</span>
+                </button>
+
+                {/* In đề */}
+                <button
+                  type="button"
+                  onClick={handlePrint}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-700 hover:text-slate-950 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition-colors cursor-pointer"
+                  title="In đề thi hoặc xuất PDF (Ctrl + P)"
+                >
+                  <span>🖨️ In đề</span>
+                </button>
+
+                {/* Phím tắt */}
+                <button
+                  type="button"
+                  onClick={() => setIsShortcutsModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-600 hover:text-indigo-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition-colors cursor-pointer"
+                  title="Xem danh sách phím tắt toàn cục (Phím ?)"
+                >
+                  <span>⌨️ Phím tắt</span>
+                </button>
+              </div>
             </div>
           </div>
         )}
